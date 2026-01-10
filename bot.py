@@ -3,11 +3,10 @@ import time
 import secrets
 import re
 from dataclasses import dataclass
-from typing import Dict, Optional, List, Tuple, Set
+from typing import Dict, Optional, List, Set
 
 import httpx
 import feedparser
-from dateutil import parser as date_parser
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -52,18 +51,13 @@ BOT_TOKEN = need("BOT_TOKEN")
 ADMIN_ID = int(need("ADMIN_ID"))
 
 # =========================
-# Language policy
-# - user may write any language
-# - bot answers ONLY Ukrainian or English
+# Language policy: replies only UA/EN
 # =========================
 DEFAULT_LANG = env("DEFAULT_LANG", "uk")
-USER_LANG: Dict[int, str] = {}
+USER_LANG: Dict[int, str] = {}  # user_id -> "uk" | "en"
 
 def get_lang(user_id: int) -> str:
-    if DEFAULT_LANG not in ("uk", "en"):
-        base = "uk"
-    else:
-        base = DEFAULT_LANG
+    base = DEFAULT_LANG if DEFAULT_LANG in ("uk", "en") else "uk"
     return USER_LANG.get(user_id, base)
 
 def t(user_id: int, uk: str, en: str) -> str:
@@ -88,8 +82,8 @@ def ai_enabled() -> bool:
 
 async def ask_ai(user_id: int, user_text: str, mode: str = "faq") -> str:
     """
-    mode = 'faq' | 'admin'
-    Hard rules: answer only UA/EN, never RU, never reveal secrets.
+    mode: faq | admin
+    Hard rules: UA/EN only, never RU, no secrets.
     """
     if not ai_enabled():
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
@@ -133,11 +127,10 @@ async def ask_ai(user_id: int, user_text: str, mode: str = "faq") -> str:
     return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
 
 # =========================
-# Content
+# Content UA/EN
 # =========================
 CONTENT = {
     "uk": {
-        "title": "УКРАВІАКОСТЕХ | ЕКСТРЕНИЙ ЗВʼЯЗОК",
         "company": (
             "🏢 **УКРАВІАКОСТЕХ**\n\n"
             "УКРАВІАКОСТЕХ — інженерна компанія, що розробляє та підтримує автономні та інфраструктурні рішення.\n"
@@ -158,7 +151,7 @@ CONTENT = {
             "• немає світла\n"
             "• немає інтернету\n"
             "• немає мобільного звʼязку\n\n"
-            "🔒 Ми **не публікуємо** технічні параметри, ключі чи інструкції підключення у відкритому доступі.\n"
+            "🔒 Технічні параметри, ключі та інструкції підключення не публікуються.\n"
             "Інструкції надаються **після підтвердження**."
         ),
         "gear": (
@@ -172,49 +165,27 @@ CONTENT = {
         ),
         "rules": (
             "📜 **Правила**\n\n"
-            "• Мережа призначена для екстрених/резервних ситуацій\n"
+            "• Мережа для екстрених/резервних ситуацій\n"
             "• Спам/флуд заборонено\n"
             "• Заборонено передавати доступ іншим\n"
             "• Використання лише за призначенням\n\n"
             "Порушення → відключення."
         ),
-        "help": (
-            "ℹ️ **Допомога**\n\n"
-            "1) Натисніть «Подати запит»\n"
-            "2) Вкажіть мету\n"
-            "3) Вкажіть пристрій\n"
-            "4) Підтвердіть правила\n\n"
-            "Після цього адміністратор отримає заявку."
-        ),
         "faq_hint": "💬 **Питання (AI)**\n\nНапишіть питання одним повідомленням. Відповім коротко (без технічних деталей).",
-        "menu": "Меню:",
-        "choose_lang": "Оберіть мову / Choose language:",
-        "lang_saved": "✅ Мову збережено.",
-        "cooldown": "⏳ Зачекайте {sec} сек і спробуйте ще раз.",
-        "apply_intro": "🟢 **ЗАПИТ НА ДОСТУП**\n\nДля чого вам доступ до мережі? Напишіть коротко (1 рядок).",
+        "apply_intro": "🟢 **ЗАПИТ НА ДОСТУП**\n\nДля чого вам доступ? Напишіть коротко (1 рядок).",
         "ask_device": "📦 Який пристрій ви плануєте використовувати? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Підтвердіть правила. Напишіть: **ПІДТВЕРДЖУЮ**",
-        "cancelled": "❌ Запит скасовано.",
-        "sent_to_admin": "✅ Дякуємо! Заявку передано адміністратору. Очікуйте відповідь у цьому чаті.",
-        "approved_user": "✅ Ваш запит **схвалено**. Інструкції/доступ буде надано адміністратором окремо.",
-        "denied_user": "❌ Ваш запит **відхилено**. Ви можете подати запит повторно пізніше.",
-        "no_rights": "⛔ Недостатньо прав.",
-        "already_done": "⚠️ Заявка вже оброблена або не знайдена.",
+        "sent": "✅ Дякуємо! Заявку передано адміністратору. Очікуйте відповідь у цьому чаті.",
+        "cancel": "❌ Запит скасовано.",
+        "lang_saved": "✅ Мову збережено.",
+        "menu": "Меню:",
         "alerts_no_key": "⚠️ Тривоги: ключ не налаштовано.",
-        "alerts_on": "✅ Сповіщення про тривоги увімкнено.",
-        "alerts_off": "✅ Сповіщення про тривоги вимкнено.",
-        "alerts_choose_region": "Оберіть регіон для сповіщень:",
-        "alerts_set_oblast": "✅ Регіон встановлено: Одеська область.",
-        "alerts_set_city": "✅ Регіон встановлено: Одеса (місто).",
-        "news_not_config": "⚠️ Новини не налаштовано (NEWS_CHANNEL_ID/RSS_FEEDS).",
-        "news_enabled": "✅ Срочні новини: увімкнено.",
-        "news_disabled": "✅ Срочні новини: вимкнено.",
+        "news_not_cfg": "⚠️ Новини не налаштовано (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
     },
     "en": {
-        "title": "UKRAVIAKOSTECH | EMERGENCY LINK",
         "company": (
             "🏢 **UkrAviaKosTech**\n\n"
-            "UkrAviaKosTech is an engineering company developing autonomous and infrastructure-grade solutions.\n"
+            "UkrAviaKosTech is an engineering company building autonomous and infrastructure-grade solutions.\n"
             "This bot is the official interface for managed access to a reserve communication system for emergency scenarios.\n\n"
             "🔐 Access is provided **by request only**."
         ),
@@ -228,11 +199,11 @@ CONTENT = {
         ),
         "system": (
             "📡 **How it works (high level)**\n\n"
-            "An autonomous short-message communication system designed to work when:\n"
+            "An autonomous short-message system designed to work when:\n"
             "• power is down\n"
             "• internet is down\n"
             "• mobile networks are unavailable\n\n"
-            "🔒 We do **not** publish technical parameters, keys or onboarding instructions publicly.\n"
+            "🔒 Technical parameters, keys and onboarding instructions are not published.\n"
             "Onboarding is provided **after verification**."
         ),
         "gear": (
@@ -246,43 +217,22 @@ CONTENT = {
         ),
         "rules": (
             "📜 **Rules**\n\n"
-            "• Intended for emergency/reserve scenarios\n"
+            "• For emergency/reserve scenarios\n"
             "• No spam/flood\n"
             "• Do not share access with others\n"
             "• Use for intended purpose only\n\n"
             "Violations → removal."
         ),
-        "help": (
-            "ℹ️ **Help**\n\n"
-            "1) Tap “Request access”\n"
-            "2) Provide purpose\n"
-            "3) Provide device\n"
-            "4) Confirm rules\n\n"
-            "Admin will receive your request."
-        ),
-        "faq_hint": "💬 **Questions (AI)**\n\nSend your question in one message. I will reply briefly (no technical details).",
-        "menu": "Menu:",
-        "choose_lang": "Choose language:",
-        "lang_saved": "✅ Language saved.",
-        "cooldown": "⏳ Please wait {sec} seconds and try again.",
-        "apply_intro": "🟢 **ACCESS REQUEST**\n\nWhat do you need access for? Write a short one-liner.",
-        "ask_device": "📦 Which device will you use? (ThinkNode M2 / T-Echo / Heltec)",
+        "faq_hint": "💬 **Questions (AI)**\n\nSend one message. I will reply briefly (no technical details).",
+        "apply_intro": "🟢 **ACCESS REQUEST**\n\nWhat do you need access for? One short line.",
+        "ask_device": "📦 Which device? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Confirm rules. Type: **CONFIRM**",
-        "cancelled": "❌ Request cancelled.",
-        "sent_to_admin": "✅ Thanks! Your request was sent to the admin. Please wait for a response here.",
-        "approved_user": "✅ Your request is **approved**. Onboarding/access will be provided by admin separately.",
-        "denied_user": "❌ Your request is **denied**. You may apply again later.",
-        "no_rights": "⛔ Not enough permissions.",
-        "already_done": "⚠️ Request already processed or not found.",
+        "sent": "✅ Thanks! Your request was sent to the admin. Please wait here.",
+        "cancel": "❌ Request cancelled.",
+        "lang_saved": "✅ Language saved.",
+        "menu": "Menu:",
         "alerts_no_key": "⚠️ Alerts: API key not configured.",
-        "alerts_on": "✅ Alerts enabled.",
-        "alerts_off": "✅ Alerts disabled.",
-        "alerts_choose_region": "Choose a region for alerts:",
-        "alerts_set_oblast": "✅ Region set: Odesa oblast.",
-        "alerts_set_city": "✅ Region set: Odesa city.",
-        "news_not_config": "⚠️ News not configured (NEWS_CHANNEL_ID/RSS_FEEDS).",
-        "news_enabled": "✅ Urgent news: enabled.",
-        "news_disabled": "✅ Urgent news: disabled.",
+        "news_not_cfg": "⚠️ News not configured (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
     }
 }
 
@@ -290,7 +240,7 @@ def C(user_id: int, key: str) -> str:
     return CONTENT[get_lang(user_id)][key]
 
 # =========================
-# Buttons / UI
+# Menu UI
 # =========================
 def lang_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -302,29 +252,27 @@ def lang_kb() -> InlineKeyboardMarkup:
 def menu_kb(user_id: int) -> InlineKeyboardMarkup:
     if get_lang(user_id) == "uk":
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Подати запит на доступ", callback_data="apply:start")],
+            [InlineKeyboardButton("🟢 Запит на доступ", callback_data="apply:start")],
             [InlineKeyboardButton("🏢 Про компанію", callback_data="info:company"),
              InlineKeyboardButton("🧩 Продукти", callback_data="info:products")],
             [InlineKeyboardButton("📡 Як працює система", callback_data="info:system")],
             [InlineKeyboardButton("📦 Обладнання", callback_data="info:gear"),
              InlineKeyboardButton("📜 Правила", callback_data="info:rules")],
             [InlineKeyboardButton("💬 Питання (AI)", callback_data="faq:start")],
-            [InlineKeyboardButton("🚨 Тривоги: On/Off", callback_data="alerts:toggle"),
-             InlineKeyboardButton("📍 Регіон", callback_data="alerts:region")],
-            [InlineKeyboardButton("📰 Срочні новини: On/Off", callback_data="news:toggle")],
+            [InlineKeyboardButton("🚨 Тривоги On/Off", callback_data="alerts:toggle")],
+            [InlineKeyboardButton("📰 Срочні новини → канал", callback_data="news:test")],
             [InlineKeyboardButton("🌐 Мова / Language", callback_data="lang:menu")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Request access", callback_data="apply:start")],
+        [InlineKeyboardButton("🟢 Access request", callback_data="apply:start")],
         [InlineKeyboardButton("🏢 Company", callback_data="info:company"),
          InlineKeyboardButton("🧩 Products", callback_data="info:products")],
         [InlineKeyboardButton("📡 How it works", callback_data="info:system")],
         [InlineKeyboardButton("📦 Equipment", callback_data="info:gear"),
          InlineKeyboardButton("📜 Rules", callback_data="info:rules")],
         [InlineKeyboardButton("💬 Questions (AI)", callback_data="faq:start")],
-        [InlineKeyboardButton("🚨 Alerts: On/Off", callback_data="alerts:toggle"),
-         InlineKeyboardButton("📍 Region", callback_data="alerts:region")],
-        [InlineKeyboardButton("📰 Urgent news: On/Off", callback_data="news:toggle")],
+        [InlineKeyboardButton("🚨 Alerts On/Off", callback_data="alerts:toggle")],
+        [InlineKeyboardButton("📰 Urgent news → channel", callback_data="news:test")],
         [InlineKeyboardButton("🌐 Language", callback_data="lang:menu")],
     ])
 
@@ -333,17 +281,6 @@ def admin_kb(key: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("✅ Approve", callback_data=f"admin:approve:{key}"),
         InlineKeyboardButton("❌ Deny", callback_data=f"admin:deny:{key}"),
     ]])
-
-def who(u) -> str:
-    return f"@{u.username}" if u.username else f"id:{u.id}"
-
-# =========================
-# Anti-spam
-# =========================
-COOLDOWN_SEC = 45
-AI_COOLDOWN_SEC = 10
-_last_apply: Dict[int, float] = {}
-_last_ai: Dict[int, float] = {}
 
 # =========================
 # Access requests
@@ -360,9 +297,11 @@ class AccessRequest:
 
 PENDING: Dict[str, AccessRequest] = {}
 
+def who(u) -> str:
+    return f"@{u.username}" if u.username else f"id:{u.id}"
+
 # =========================
-# Alerts (official key) - minimal implementation
-# IMPORTANT: confirm official endpoints in your email/docs
+# Alerts (official key module - high-level)
 # =========================
 UA_ALARM_ENABLED = env_bool("UA_ALARM_ENABLED", False)
 UA_ALARM_API_KEY = env("UA_ALARM_API_KEY", "")
@@ -370,11 +309,10 @@ UA_ALARM_POLL_SEC = env_int("UA_ALARM_POLL_SEC", 15)
 UA_ALARM_BASE = env("UA_ALARM_BASE", "https://api.ukrainealarm.com")
 UA_ALARM_REGIONS_PATH = env("UA_ALARM_REGIONS_PATH", "/api/v3/regions")
 UA_ALARM_ALERT_PATH_TEMPLATE = env("UA_ALARM_ALERT_PATH_TEMPLATE", "/api/v3/alerts/{regionId}")
-
 UA_ALARM_AUTH_HEADER = env("UA_ALARM_AUTH_HEADER", "Authorization")
 UA_ALARM_AUTH_PREFIX = env("UA_ALARM_AUTH_PREFIX", "")
+
 UA_ALARM_OBLAST_NAME = env("UA_ALARM_OBLAST_NAME", "Одеська область")
-UA_ALARM_CITY_NAME = env("UA_ALARM_CITY_NAME", "Одеса")
 
 ALERTS_ENABLED: Dict[int, bool] = {}
 ALERT_REGION: Dict[int, str] = {}
@@ -408,21 +346,14 @@ async def ua_load_regions() -> None:
         rid = it.get("regionId") or it.get("id") or it.get("region_id") or ""
         if not (name and rid):
             continue
-        n = norm(name)
-        if n == norm(UA_ALARM_OBLAST_NAME):
+        if norm(name) == norm(UA_ALARM_OBLAST_NAME):
             REGION_CACHE["oblast"] = str(rid)
-        if "одес" in n and (("місто" in n) or ("м." in n) or (n == norm(UA_ALARM_CITY_NAME))):
-            REGION_CACHE["city"] = str(rid)
 
 async def ua_region_oblast() -> str:
     await ua_load_regions()
     if "oblast" in REGION_CACHE:
         return REGION_CACHE["oblast"]
-    raise RuntimeError("Не знайдено regionId для області (перевір /regions).")
-
-async def ua_region_city() -> Optional[str]:
-    await ua_load_regions()
-    return REGION_CACHE.get("city")
+    raise RuntimeError("Не знайдено regionId області у /regions (звір endpoint).")
 
 def parse_is_alert(data: dict) -> Optional[bool]:
     for k in ("isAlert", "is_alert", "alert", "active"):
@@ -441,7 +372,6 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
     if not subs:
         return
     region_ids = sorted({ALERT_REGION[uid] for uid in subs})
-
     for rid in region_ids:
         try:
             path = UA_ALARM_ALERT_PATH_TEMPLATE.replace("{regionId}", rid)
@@ -449,12 +379,10 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
             is_alert = parse_is_alert(data if isinstance(data, dict) else {})
             if is_alert is None:
                 continue
-
             prev = ALERT_LAST_STATE.get(rid)
             if prev is None:
                 ALERT_LAST_STATE[rid] = is_alert
                 continue
-
             if prev != is_alert:
                 ALERT_LAST_STATE[rid] = is_alert
                 msg_uk = "🔴 ТРИВОГА" if is_alert else "🟢 ВІДБІЙ"
@@ -476,7 +404,6 @@ NEWS_CHANNEL_ID = env("NEWS_CHANNEL_ID", "")
 NEWS_POLL_SEC = env_int("NEWS_POLL_SEC", 120)
 RSS_FEEDS = [u.strip() for u in env("RSS_FEEDS", "").split(",") if u.strip()]
 URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",") if k.strip()]
-
 _seen_links: Set[str] = set()
 
 def news_config_ok() -> bool:
@@ -485,7 +412,7 @@ def news_config_ok() -> bool:
 def urgent_by_keywords(title: str, summary: str) -> bool:
     text = f"{title}\n{summary}".lower()
     for kw in URGENT_KEYWORDS:
-        if kw.lower() and kw.lower() in text:
+        if kw.lower() in text:
             return True
     return False
 
@@ -504,11 +431,10 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                 summary = getattr(entry, "summary", "") or ""
                 if not link or link in _seen_links:
                     continue
-
                 if not urgent_by_keywords(title, summary):
                     continue
 
-                # optional AI verification (strict)
+                # optional AI verify urgent
                 if ai_enabled():
                     verdict = _ai_client.responses.create(
                         model=AI_MODEL,
@@ -536,7 +462,6 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                 if short:
                     post += "🤖 Коротко:\n" + short + "\n\n"
                 post += "🔗 Джерело: " + link
-
                 await post_to_channel(context, post)
         except Exception:
             continue
@@ -553,9 +478,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     await update.message.reply_text(
         t(uid,
-          f"👋 Вітаю!\n\nЦе офіційний бот доступу до мережі екстреного звʼязку **УКРАВІАКОСТЕХ**.\n\n{C(uid,'menu')}",
-          f"👋 Hello!\n\nThis is the official access bot for **UkrAviaKosTech** emergency communications.\n\n{C(uid,'menu')}"),
-        parse_mode="Markdown",
+          f"👋 Вітаю!\n\n{C(uid,'menu')}",
+          f"👋 Hello!\n\n{C(uid,'menu')}"),
         reply_markup=menu_kb(uid),
     )
 
@@ -575,62 +499,57 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "lang:menu":
         await q.message.reply_text(C(uid, "choose_lang"), reply_markup=lang_kb())
-        return
+        return ConversationHandler.END
 
     if data.startswith("lang:set:"):
         _, _, lng = data.split(":")
         USER_LANG[uid] = "en" if lng == "en" else "uk"
         await q.message.reply_text(C(uid, "lang_saved"))
         await q.message.reply_text(C(uid, "menu"), reply_markup=menu_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "menu:back":
         await q.message.reply_text(C(uid, "menu"), reply_markup=menu_kb(uid))
-        return
+        return ConversationHandler.END
 
     if data == "info:company":
         await q.message.reply_text(C(uid, "company"), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
     if data == "info:products":
         await q.message.reply_text(C(uid, "products"), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
     if data == "info:system":
         await q.message.reply_text(C(uid, "system"), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
     if data == "info:gear":
         await q.message.reply_text(C(uid, "gear"), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
     if data == "info:rules":
         await q.message.reply_text(C(uid, "rules"), parse_mode="Markdown")
-        return
+        return ConversationHandler.END
 
-    # FAQ start
     if data == "faq:start":
         now = time.time()
-        last = _last_ai.get(uid, 0)
-        if now - last < AI_COOLDOWN_SEC:
-            await q.message.reply_text(C(uid, "cooldown").format(sec=int(AI_COOLDOWN_SEC - (now - last))))
-            return
+        if now - _last_ai.get(uid, 0) < AI_COOLDOWN_SEC:
+            await q.message.reply_text(C(uid, "cooldown").format(sec=int(AI_COOLDOWN_SEC - (now - _last_ai.get(uid, 0)))))
+            return ASK_FAQ
         _last_ai[uid] = now
         await q.message.reply_text(C(uid, "faq_hint"), parse_mode="Markdown")
         return ASK_FAQ
 
-    # Apply start (conversation)
     if data == "apply:start":
         now = time.time()
-        last = _last_apply.get(uid, 0)
-        if now - last < COOLDOWN_SEC:
-            await q.message.reply_text(C(uid, "cooldown").format(sec=int(COOLDOWN_SEC - (now - last))))
-            return
+        if now - _last_apply.get(uid, 0) < COOLDOWN_SEC:
+            await q.message.reply_text(C(uid, "cooldown").format(sec=int(COOLDOWN_SEC - (now - _last_apply.get(uid, 0)))))
+            return ASK_PURPOSE
         _last_apply[uid] = now
         await q.message.reply_text(C(uid, "apply_intro"), parse_mode="Markdown")
         return ASK_PURPOSE
 
-    # Alerts toggle
     if data == "alerts:toggle":
         if not ua_alarm_enabled():
             await q.message.reply_text(C(uid, "alerts_no_key"))
-            return
+            return ConversationHandler.END
         on = ALERTS_ENABLED.get(uid, False)
         if on:
             ALERTS_ENABLED[uid] = False
@@ -640,46 +559,17 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ALERT_REGION[uid] = rid
             ALERTS_ENABLED[uid] = True
             await q.message.reply_text(C(uid, "alerts_on"))
-        return
+        return ConversationHandler.END
 
-    # Alerts region pick
-    if data == "alerts:region":
-        if not ua_alarm_enabled():
-            await q.message.reply_text(C(uid, "alerts_no_key"))
-            return
-        await ua_load_regions()
-        buttons = [[InlineKeyboardButton(t(uid, "Одеська область", "Odesa oblast"), callback_data="areg:set:oblast")]]
-        if await ua_region_city():
-            buttons.append([InlineKeyboardButton(t(uid, "Одеса (місто)", "Odesa city"), callback_data="areg:set:city")])
-        await q.message.reply_text(C(uid, "alerts_choose_region"), reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    # News toggle informational only (posting is global via env)
-    if data == "news:toggle":
+    if data == "news:test":
         if not news_config_ok():
-            await q.message.reply_text(C(uid, "news_not_config"))
-            return
-        await q.message.reply_text(C(uid, "news_enabled") if get_lang(uid) == "uk" else C(uid, "news_enabled"))
-        return
+            await q.message.reply_text(C(uid, "news_not_cfg"))
+            return ConversationHandler.END
+        await q.message.reply_text("✅ OK")
+        return ConversationHandler.END
 
-async def alerts_region_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    if not ua_alarm_enabled():
-        await q.message.reply_text(C(uid, "alerts_no_key"))
-        return
-    await ua_load_regions()
-    if q.data == "areg:set:oblast":
-        ALERT_REGION[uid] = await ua_region_oblast()
-        await q.message.reply_text(C(uid, "alerts_set_oblast"))
-    elif q.data == "areg:set:city":
-        city = await ua_region_city()
-        if city:
-            ALERT_REGION[uid] = city
-            await q.message.reply_text(C(uid, "alerts_set_city"))
+    return ConversationHandler.END
 
-# ---- Apply conversation
 async def ask_purpose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     context.user_data["purpose"] = (update.message.text or "").strip()
@@ -699,7 +589,7 @@ async def ask_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip().upper()
     confirm_word = "ПІДТВЕРДЖУЮ" if get_lang(uid) == "uk" else "CONFIRM"
     if txt != confirm_word:
-        await update.message.reply_text(C(uid, "cancelled"))
+        await update.message.reply_text(C(uid, "cancel"))
         return ConversationHandler.END
 
     u = update.effective_user
@@ -731,69 +621,74 @@ async def ask_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=admin_kb(key), parse_mode="Markdown")
     except Exception:
-        # most common: admin never pressed /start
         pass
 
-    await update.message.reply_text(C(uid, "sent_to_admin"))
+    await update.message.reply_text(C(uid, "sent"))
     return ConversationHandler.END
 
-# ---- FAQ conversation
 async def faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     q = (update.message.text or "").strip()
     if not q:
         await update.message.reply_text(t(uid, "Напишіть питання текстом.", "Please send a text question."))
         return ASK_FAQ
-    ans = await ask_ai(uid, q, mode="faq") if ai_enabled() else t(uid, "AI_toggle: вимкнено.", "AI is disabled.")
+    ans = await ask_ai(uid, q, mode="faq") if ai_enabled() else t(uid, "AI вимкнено.", "AI is disabled.")
     await update.message.reply_text(ans)
     return ConversationHandler.END
 
-# ---- Admin
 async def admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     if q.from_user.id != ADMIN_ID:
         await q.message.reply_text(C(ADMIN_ID, "no_rights"))
         return
-
     _, action, key = q.data.split(":", 2)
     req = PENDING.pop(key, None)
     if not req:
         await q.message.reply_text(C(ADMIN_ID, "already_done"))
         return
-
     if action == "approve":
         await context.bot.send_message(chat_id=req.chat_id, text=C(req.user_id, "approved_user"), parse_mode="Markdown")
         await q.message.reply_text(f"✅ Approved: {req.who}")
-        return
-
-    if action == "deny":
+    elif action == "deny":
         await context.bot.send_message(chat_id=req.chat_id, text=C(req.user_id, "denied_user"), parse_mode="Markdown")
         await q.message.reply_text(f"❌ Denied: {req.who}")
-        return
 
 # =========================
-# MAIN
+# post_init: schedule jobs safely (PTB v21+)
+# =========================
+async def post_init(application):
+    if news_config_ok():
+        application.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
+    if ua_alarm_enabled():
+        application.job_queue.run_repeating(alerts_job, interval=UA_ALARM_POLL_SEC, first=5)
+
+# =========================
+# main
 # =========================
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
-    # Commands
+    # commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("rules", rules_cmd))
 
-    # Menu callbacks (apply & faq are also conversation entry points; safe here because we route by pattern)
+    # callbacks (menu)
     app.add_handler(CallbackQueryHandler(
         menu_handler,
-        pattern=r"^(info:company|info:products|info:system|info:gear|info:rules|faq:start|apply:start|alerts:toggle|alerts:region|news:toggle|lang:menu|lang:set:(uk|en)|menu:back)$"
+        pattern=r"^(info:company|info:products|info:system|info:gear|info:rules|faq:start|apply:start|alerts:toggle|news:test|lang:menu|lang:set:(uk|en)|menu:back)$"
     ))
-    app.add_handler(CallbackQueryHandler(alerts_region_cb, pattern=r"^areg:set:(oblast|city)$"))
 
-    # Admin callbacks
+    # admin callbacks
     app.add_handler(CallbackQueryHandler(admin_handler, pattern=r"^admin:(approve|deny):"))
 
-    # Conversations
+    # conversations: apply + faq
     apply_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(menu_handler, pattern=r"^apply:start$")],
         states={
@@ -810,15 +705,9 @@ def main():
         },
         fallbacks=[],
     )
+
     app.add_handler(apply_conv)
     app.add_handler(faq_conv)
-
-    # Jobs
-    if ua_alarm_enabled():
-        app.job_queue.run_repeating(alerts_job, interval=UA_ALARM_POLL_SEC, first=5)
-
-    if news_config_ok():
-        app.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
