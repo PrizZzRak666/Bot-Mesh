@@ -77,6 +77,8 @@ def t(user_id: int, uk: str, en: str) -> str:
 OPENAI_API_KEY = env("OPENAI_API_KEY", "")
 AI_MODEL = env("AI_MODEL", "gpt-5")
 AI_TEMP_DISABLE_SEC = env_int("AI_TEMP_DISABLE_SEC", 900)
+AI_TIMEOUT_SEC = env_int("AI_TIMEOUT_SEC", 20)
+AI_INPUT_MAX_CHARS = env_int("AI_INPUT_MAX_CHARS", 3000)
 
 _ai_client = None
 _ai_disabled_until = 0.0
@@ -142,11 +144,15 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
         logger.warning("AI request ignored: client not configured")
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
     try:
-        resp = await asyncio.to_thread(
-            _ai_client.responses.create,
-            model=AI_MODEL,
-            instructions=ai_instructions(user_id, mode),
-            input=text,
+        safe_text = (text or "").strip()[:AI_INPUT_MAX_CHARS]
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.responses.create,
+                model=AI_MODEL,
+                instructions=ai_instructions(user_id, mode),
+                input=safe_text,
+            ),
+            timeout=AI_TIMEOUT_SEC,
         )
         out = (getattr(resp, "output_text", "") or "").strip()
         return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
@@ -487,6 +493,8 @@ NEWS_CHANNEL_ID = env("NEWS_CHANNEL_ID", "")
 NEWS_POLL_SEC = env_int("NEWS_POLL_SEC", 120)
 RSS_FEEDS = [u.strip() for u in env("RSS_FEEDS", "").split(",") if u.strip()]
 URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",") if k.strip()]
+NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
+NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 8)
 
 SEEN_MAX = env_int("NEWS_SEEN_MAX", 5000)
 _seen_links: Set[str] = set()
@@ -539,11 +547,15 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                     short = ""
                     if ai_enabled():
                         try:
-                            resp = await asyncio.to_thread(
-                                _ai_client.responses.create,
-                                model=AI_MODEL,
-                                instructions="Стисни до 2 речень українською без паніки. Без вигадок.",
-                                input=f"{title}\n{summary}",
+                            safe_summary = (summary or "")[:NEWS_SUMMARY_MAX_CHARS]
+                            resp = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    _ai_client.responses.create,
+                                    model=AI_MODEL,
+                                    instructions="Стисни до 2 речень українською без паніки. Без вигадок.",
+                                    input=f"{title}\n{safe_summary}",
+                                ),
+                                timeout=NEWS_AI_TIMEOUT_SEC,
                             )
                             short = (getattr(resp, "output_text", "") or "").strip()
                         except Exception as exc:
@@ -901,6 +913,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # post_init: schedule jobs safely (PTB v21+)
 # =========================
 async def post_init(application):
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+    except Exception:
+        logger.exception("Failed to delete webhook")
     if news_config_ok():
         application.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
     if ua_alarm_enabled():
