@@ -76,18 +76,33 @@ def t(user_id: int, uk: str, en: str) -> str:
 # =========================
 OPENAI_API_KEY = env("OPENAI_API_KEY", "")
 AI_MODEL = env("AI_MODEL", "gpt-5")
+AI_TEMP_DISABLE_SEC = env_int("AI_TEMP_DISABLE_SEC", 900)
 
 _ai_client = None
+_ai_disabled_until = 0.0
 if OPENAI_API_KEY:
     try:
         from openai import OpenAI
-        _ai_client = OpenAI(api_key=OPENAI_API_KEY)
+        _ai_client = OpenAI(api_key=OPENAI_API_KEY, max_retries=0)
     except Exception:
         logger.exception("OpenAI client init failed")
         _ai_client = None
 
 def ai_enabled() -> bool:
-    return _ai_client is not None
+    if _ai_client is None:
+        return False
+    return time.time() >= _ai_disabled_until
+
+def _ai_should_backoff(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "insufficient_quota" in msg or "quota" in msg or "429" in msg
+
+def _ai_disable_temporarily(reason: str):
+    global _ai_disabled_until
+    if AI_TEMP_DISABLE_SEC <= 0:
+        return
+    _ai_disabled_until = max(_ai_disabled_until, time.time() + AI_TEMP_DISABLE_SEC)
+    logger.warning("AI temporarily disabled for %ss: %s", AI_TEMP_DISABLE_SEC, reason)
 
 def ai_instructions(user_id: int, mode: str) -> str:
     base_rules = (
@@ -135,7 +150,9 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
         )
         out = (getattr(resp, "output_text", "") or "").strip()
         return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
-    except Exception:
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
         logger.exception("AI request failed (user_id=%s mode=%s)", user_id, mode)
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
 
@@ -375,15 +392,36 @@ async def ua_load_regions(client: Optional[httpx.AsyncClient] = None):
     items = data if isinstance(data, list) else data.get("regions") or data.get("data") or []
 
     def norm(s: str) -> str:
-        return (s or "").strip().lower()
+        s = (s or "").strip().lower()
+        for token in ("область", "обл.", "обл"):
+            s = s.replace(token, "")
+        return " ".join(s.split())
 
     target = norm(UA_ALARM_OBLAST_NAME)
+    fallback_rid = ""
+    fallback_name = ""
     for it in items:
         name = it.get("name") or it.get("title") or ""
         rid = it.get("regionId") or it.get("id") or it.get("region_id") or ""
-        if name and rid and norm(name) == target:
+        if not name or not rid:
+            continue
+        name_norm = norm(name)
+        if name_norm == target:
             REGION_CACHE["oblast"] = str(rid)
             return
+        if target and (target in name_norm or name_norm in target):
+            fallback_rid = str(rid)
+            fallback_name = name
+
+    if fallback_rid:
+        REGION_CACHE["oblast"] = fallback_rid
+        logger.warning("UA alarm region matched by partial name: %s", fallback_name)
+        return
+    if items:
+        sample = []
+        for it in items[:10]:
+            sample.append(it.get("name") or it.get("title") or "")
+        logger.error("UA alarm region not found. Sample regions: %s", sample)
 
 async def ua_region_oblast() -> str:
     await ua_load_regions()
@@ -479,7 +517,7 @@ async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             try:
                 r = await client.get(feed_url, headers={"User-Agent": "TelegramBot/1.0"})
@@ -508,7 +546,9 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                                 input=f"{title}\n{summary}",
                             )
                             short = (getattr(resp, "output_text", "") or "").strip()
-                        except Exception:
+                        except Exception as exc:
+                            if _ai_should_backoff(exc):
+                                _ai_disable_temporarily("rate limit or quota")
                             logger.exception("News AI summary failed for feed %s", feed_url)
                             short = ""
 
