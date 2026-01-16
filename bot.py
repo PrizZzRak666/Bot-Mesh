@@ -1,9 +1,11 @@
 import os
 import time
+import json
 import secrets
 import asyncio
+import logging
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Dict, Optional, Set
 
 import httpx
@@ -46,11 +48,17 @@ def env_int(name: str, default: int) -> int:
     except Exception:
         return default
 
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(env(name, str(default)))
+    except Exception:
+        return default
+
 # =========================
-# REQUIRED
+# REQUIRED (set in main)
 # =========================
-BOT_TOKEN = need("BOT_TOKEN")
-ADMIN_ID = int(need("ADMIN_ID"))
+BOT_TOKEN: Optional[str] = None
+ADMIN_ID: Optional[int] = None
 
 # =========================
 # Language policy: replies only UA/EN (never RU)
@@ -58,6 +66,13 @@ ADMIN_ID = int(need("ADMIN_ID"))
 # =========================
 DEFAULT_LANG = env("DEFAULT_LANG", "uk")  # uk|en
 USER_LANG: Dict[int, str] = {}  # user_id -> "uk" | "en"
+
+# =========================
+# Logging
+# =========================
+LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL)
+logger = logging.getLogger("bot")
 
 def get_lang(user_id: int) -> str:
     base = DEFAULT_LANG if DEFAULT_LANG in ("uk", "en") else "uk"
@@ -286,6 +301,7 @@ def admin_kb(key: str) -> InlineKeyboardMarkup:
 # =========================
 COOLDOWN_SEC = 45
 AI_COOLDOWN_SEC = 10
+SEND_DELAY_SEC = env_float("SEND_DELAY_SEC", 0.2)
 _last_apply: Dict[int, float] = {}
 _last_ai: Dict[int, float] = {}
 
@@ -303,6 +319,59 @@ class AccessRequest:
     ts: float
 
 PENDING: Dict[str, AccessRequest] = {}
+
+STATE_FILE = env("STATE_FILE", "state.json")
+
+def load_state() -> None:
+    if not os.path.exists(STATE_FILE):
+        return
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.warning("Failed to load state: %s", exc)
+        return
+
+    user_lang = data.get("user_lang", {})
+    if isinstance(user_lang, dict):
+        USER_LANG.clear()
+        for k, v in user_lang.items():
+            try:
+                uid = int(k)
+            except (TypeError, ValueError):
+                continue
+            if v in ("uk", "en"):
+                USER_LANG[uid] = v
+
+    pending = data.get("pending", {})
+    if isinstance(pending, dict):
+        PENDING.clear()
+        for key, item in pending.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                PENDING[key] = AccessRequest(
+                    key=key,
+                    user_id=int(item.get("user_id", 0)),
+                    chat_id=int(item.get("chat_id", 0)),
+                    who=str(item.get("who", "")),
+                    purpose=str(item.get("purpose", "")),
+                    device=str(item.get("device", "")),
+                    ts=float(item.get("ts", 0.0)),
+                )
+            except Exception:
+                continue
+
+def save_state() -> None:
+    data = {
+        "user_lang": {str(k): v for k, v in USER_LANG.items()},
+        "pending": {k: asdict(v) for k, v in PENDING.items()},
+    }
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.warning("Failed to save state: %s", exc)
 
 def who(u) -> str:
     return f"@{u.username}" if u.username else f"id:{u.id}"
@@ -416,9 +485,9 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
                                 await context.bot.send_message(chat_id=uid, text=t(uid, msg_uk, msg_en))
                             except Exception:
                                 pass
-            except Exception as e:
-                # Логи оставляем простыми, чтобы не шуметь, но не терять проблему полностью.
-                print("alerts_job error:", repr(e))
+                            await asyncio.sleep(SEND_DELAY_SEC)
+            except Exception:
+                logger.exception("alerts_job error")
                 continue
 
 # =========================
@@ -498,9 +567,10 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                     post += "🔗 Джерело: " + link
 
                     await post_to_channel(context, post)
+                    await asyncio.sleep(SEND_DELAY_SEC)
 
-            except Exception as e:
-                print("news_job error:", feed_url, repr(e))
+            except Exception:
+                logger.exception("news_job error: %s", feed_url)
                 continue
 
 # =========================
@@ -562,6 +632,7 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("lang:set:"):
         _, _, lng = data.split(":")
         USER_LANG[uid] = "en" if lng == "en" else "uk"
+        save_state()
         await q.message.reply_text(C(uid, "lang_saved"))
         await q.message.reply_text(C(uid, "menu"), reply_markup=menu_kb(uid))
         return
@@ -682,6 +753,7 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ts=time.time(),
     )
     PENDING[key] = req
+    save_state()
 
     reco = "AI: (disabled)"
     if ai_enabled():
@@ -753,6 +825,7 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     _, action, key = q.data.split(":", 2)
     req = PENDING.pop(key, None)
+    save_state()
     if not req:
         await q.message.reply_text("ℹ️ Already processed / request not found.")
         return
@@ -786,7 +859,7 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         err = context.error
-        print("ERROR:", repr(err))
+        logger.error("ERROR: %s", err, exc_info=err)
     except Exception:
         pass
 
@@ -803,6 +876,11 @@ async def post_init(application):
 # main
 # =========================
 def main():
+    global BOT_TOKEN, ADMIN_ID
+    BOT_TOKEN = need("BOT_TOKEN")
+    ADMIN_ID = int(need("ADMIN_ID"))
+    load_state()
+
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
