@@ -3,6 +3,7 @@ import time
 import secrets
 import asyncio
 import logging
+import json
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
@@ -213,7 +214,7 @@ CONTENT = {
         "choose_lang": "Оберіть мову / Choose language:",
         "cooldown": "⏳ Зачекайте {sec} сек і спробуйте ще раз.",
         "alerts_no_key": "⚠️ Тривоги: ключ не налаштовано.",
-        "news_not_cfg": "⚠️ Новини не налаштовано (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
+        "news_not_cfg": "⚠️ Новини не налаштовано (NEWS_CHANNEL_ID/RSS_FEEDS та NEWS_URGENT_KEYWORDS або NEWS_AI_FILTER_ENABLED).",
         "no_rights": "⛔️ Недостатньо прав.",
         "already_done": "⚠️ Заявку вже оброблено або не знайдено.",
         "approved_user": "✅ Ваш запит схвалено. Інструкції надійдуть окремо.",
@@ -264,7 +265,7 @@ CONTENT = {
         "choose_lang": "Choose language:",
         "cooldown": "⏳ Please wait {sec} seconds.",
         "alerts_no_key": "⚠️ Alerts: API key not configured.",
-        "news_not_cfg": "⚠️ News not configured (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
+        "news_not_cfg": "⚠️ News not configured (NEWS_CHANNEL_ID/RSS_FEEDS and NEWS_URGENT_KEYWORDS or NEWS_AI_FILTER_ENABLED).",
         "no_rights": "⛔️ Not authorized.",
         "already_done": "⚠️ Request already handled or not found.",
         "approved_user": "✅ Your request was approved. Instructions will follow separately.",
@@ -601,6 +602,12 @@ RSS_FEEDS = [u.strip() for u in env("RSS_FEEDS", "").split(",") if u.strip()]
 URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",") if k.strip()]
 NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
 NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 8)
+NEWS_USE_KEYWORDS = env_bool("NEWS_USE_KEYWORDS", False)
+NEWS_AI_FILTER_ENABLED = env_bool("NEWS_AI_FILTER_ENABLED", False)
+NEWS_AI_STRICT = env_bool("NEWS_AI_STRICT", False)
+NEWS_AI_MIN_CRITICALITY = env_int("NEWS_AI_MIN_CRITICALITY", 3)
+NEWS_AI_MIN_IMPORTANCE = env_int("NEWS_AI_MIN_IMPORTANCE", 3)
+NEWS_AI_SCORE_SCALE = env_int("NEWS_AI_SCORE_SCALE", 5)
 
 NEWS_SEEN_MAX = env_int("NEWS_SEEN_MAX", 5000)
 NEWS_MIN_KEYWORDS = env_int("NEWS_MIN_KEYWORDS", 2)
@@ -636,7 +643,13 @@ def remember_title(title: str):
         _seen_titles.discard(old)
 
 def news_config_ok() -> bool:
-    return NEWS_ENABLED and bool(NEWS_CHANNEL_ID) and RSS_FEEDS and URGENT_KEYWORDS
+    if not (NEWS_ENABLED and bool(NEWS_CHANNEL_ID) and RSS_FEEDS):
+        return False
+    if NEWS_USE_KEYWORDS and not URGENT_KEYWORDS:
+        return False
+    if not NEWS_USE_KEYWORDS and not NEWS_AI_FILTER_ENABLED:
+        return False
+    return True
 
 def keyword_hits(text: str) -> int:
     text = (text or "").lower()
@@ -652,6 +665,83 @@ def urgent_by_keywords(title: str, summary: str) -> bool:
     if NEWS_REQUIRE_TITLE_KEYWORD and title_hits == 0:
         return False
     return (title_hits + summary_hits) >= NEWS_MIN_KEYWORDS
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start:end + 1]
+    try:
+        return json.loads(snippet)
+    except Exception:
+        return None
+
+def _to_int(value) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(round(value))
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except Exception:
+            try:
+                return int(round(float(value.strip())))
+            except Exception:
+                return None
+    return None
+
+async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
+    if not ai_enabled():
+        return None
+    safe_title = (title or "").strip()[:300]
+    safe_summary = (summary or "").strip()[:NEWS_SUMMARY_MAX_CHARS]
+    input_text = f"TITLE:\n{safe_title}\n\nSUMMARY:\n{safe_summary}"
+    max_score = NEWS_AI_SCORE_SCALE if NEWS_AI_SCORE_SCALE > 0 else 5
+    instructions = (
+        "You are a news triage assistant.\n"
+        "Rate criticality and importance on a 0-"
+        f"{max_score} scale using integers.\n"
+        "Return ONLY a JSON object: "
+        "{\"criticality\":0,\"importance\":0}\n"
+        "criticality: immediate harm/emergency risk.\n"
+        "importance: broad impact/relevance/scale.\n"
+        "No extra text."
+    )
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.responses.create,
+                model=AI_MODEL,
+                instructions=instructions,
+                input=input_text,
+            ),
+            timeout=NEWS_AI_TIMEOUT_SEC,
+        )
+        raw = (getattr(resp, "output_text", "") or "").strip()
+        data = _extract_json_object(raw)
+        if not isinstance(data, dict):
+            return None
+        crit = _to_int(data.get("criticality"))
+        imp = _to_int(data.get("importance"))
+        if crit is None or imp is None:
+            return None
+        crit = max(0, min(max_score, crit))
+        imp = max(0, min(max_score, imp))
+        return {"criticality": crit, "importance": imp}
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("News AI scoring failed")
+        return None
 
 def news_rate_ok() -> bool:
     if NEWS_MAX_POSTS_PER_HOUR <= 0:
@@ -686,6 +776,9 @@ async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
+    if NEWS_AI_FILTER_ENABLED and not ai_enabled() and not NEWS_USE_KEYWORDS:
+        logger.warning("News AI filter enabled but AI unavailable; skipping run")
+        return
     posted = 0
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
@@ -707,8 +800,19 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                         continue
                     if not title_norm or title_norm in _seen_titles:
                         continue
-                    if not urgent_by_keywords(title, summary):
+                    if NEWS_USE_KEYWORDS and not urgent_by_keywords(title, summary):
                         continue
+
+                    ai_scores = None
+                    if NEWS_AI_FILTER_ENABLED:
+                        ai_scores = await ai_news_scores(title, summary)
+                        if ai_scores is None:
+                            if NEWS_AI_STRICT or not NEWS_USE_KEYWORDS:
+                                continue
+                        else:
+                            if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
+                                    ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
+                                continue
 
                     remember_link(link)
                     remember_title(title_norm)
@@ -734,6 +838,12 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                             short = ""
 
                     post = "🚨 ТЕРМІНОВО\n\n" + title + "\n\n"
+                    if ai_scores:
+                        max_score = NEWS_AI_SCORE_SCALE if NEWS_AI_SCORE_SCALE > 0 else 5
+                        post += (
+                            f"🎯 Оцінка AI: критичність {ai_scores['criticality']}/{max_score}, "
+                            f"важливість {ai_scores['importance']}/{max_score}\n\n"
+                        )
                     if short:
                         post += "🤖 Коротко:\n" + short + "\n\n"
                     post += "🔗 Джерело: " + link
