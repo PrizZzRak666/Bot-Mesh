@@ -5,7 +5,7 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 import httpx
 import feedparser
@@ -361,12 +361,30 @@ UA_ALARM_POLL_SEC = env_int("UA_ALARM_POLL_SEC", 15)
 UA_ALARM_BASE = env("UA_ALARM_BASE", "https://api.ukrainealarm.com")
 UA_ALARM_REGIONS_PATH = env("UA_ALARM_REGIONS_PATH", "/api/v3/regions")
 UA_ALARM_ALERT_PATH_TEMPLATE = env("UA_ALARM_ALERT_PATH_TEMPLATE", "/api/v3/alerts/{regionId}")
+UA_ALARM_ALERTS_PATH = env("UA_ALARM_ALERTS_PATH", "/api/v3/alerts")
 UA_ALARM_AUTH_HEADER = env("UA_ALARM_AUTH_HEADER", "Authorization")
 UA_ALARM_AUTH_PREFIX = env("UA_ALARM_AUTH_PREFIX", "")
 UA_ALARM_OBLAST_NAME = env("UA_ALARM_OBLAST_NAME", "Одеська область")
 
+def parse_region_ids(value: str) -> List[str]:
+    items: List[str] = []
+    for raw in value.replace(";", ",").split(","):
+        rid = raw.strip()
+        if rid:
+            items.append(rid)
+    seen = set()
+    unique: List[str] = []
+    for rid in items:
+        if rid in seen:
+            continue
+        seen.add(rid)
+        unique.append(rid)
+    return unique
+
+UA_ALARM_REGION_IDS = parse_region_ids(env("UA_ALARM_REGION_ID", ""))
+
 ALERTS_ENABLED: Dict[int, bool] = {}
-ALERT_REGION: Dict[int, str] = {}
+ALERT_REGION: Dict[int, List[str]] = {}
 ALERT_LAST_STATE: Dict[str, bool] = {}
 REGION_CACHE: Dict[str, str] = {}
 
@@ -395,7 +413,7 @@ async def ua_load_regions(client: Optional[httpx.AsyncClient] = None):
     if REGION_CACHE:
         return
     data = await ua_get_json(UA_ALARM_REGIONS_PATH, client=client)
-    items = data if isinstance(data, list) else data.get("regions") or data.get("data") or []
+    items = data if isinstance(data, list) else data.get("regions") or data.get("states") or data.get("data") or []
 
     def norm(s: str) -> str:
         s = (s or "").strip().lower()
@@ -407,7 +425,7 @@ async def ua_load_regions(client: Optional[httpx.AsyncClient] = None):
     fallback_rid = ""
     fallback_name = ""
     for it in items:
-        name = it.get("name") or it.get("title") or ""
+        name = it.get("name") or it.get("title") or it.get("regionName") or it.get("regionEngName") or ""
         rid = it.get("regionId") or it.get("id") or it.get("region_id") or ""
         if not name or not rid:
             continue
@@ -436,32 +454,120 @@ async def ua_region_oblast() -> str:
     logger.error("UA alarm region not found for oblast=%s", UA_ALARM_OBLAST_NAME)
     raise RuntimeError("Не знайдено regionId області (перевір /regions endpoint та UA_ALARM_OBLAST_NAME).")
 
-def parse_is_alert(data: dict) -> Optional[bool]:
-    for k in ("isAlert", "is_alert", "alert", "active"):
-        if k in data:
-            return bool(data[k])
-    if isinstance(data.get("data"), dict):
-        for k in ("isAlert", "is_alert", "alert", "active"):
-            if k in data["data"]:
-                return bool(data["data"][k])
+def _coerce_bool(value: object) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off"):
+            return False
     return None
+
+def _parse_alert_list(value: object) -> Optional[bool]:
+    if not isinstance(value, list):
+        return None
+    if not value:
+        return False
+    any_known = False
+    for item in value:
+        parsed = parse_is_alert(item)
+        if parsed is True:
+            return True
+        if parsed is False:
+            any_known = True
+    return False if any_known else None
+
+def _parse_alert_item(data: dict) -> Optional[bool]:
+    for k in ("isAlert", "is_alert", "isActive", "is_active", "alert", "active", "isContinue", "is_continue"):
+        if k in data:
+            parsed = _coerce_bool(data.get(k))
+            if parsed is not None:
+                return parsed
+    if "endDate" in data:
+        end = data.get("endDate")
+        return True if end in (None, "", 0) else False
+    return None
+
+def parse_is_alert(data: object) -> Optional[bool]:
+    if isinstance(data, dict):
+        parsed = _parse_alert_item(data)
+        if parsed is not None:
+            return parsed
+        if "activeAlerts" in data:
+            active = data.get("activeAlerts")
+            if isinstance(active, list):
+                return True if active else False
+            parsed = _parse_alert_list(active)
+            if parsed is not None:
+                return parsed
+        for k in ("alerts", "alarms"):
+            if k in data:
+                parsed = _parse_alert_list(data.get(k))
+                if parsed is not None:
+                    return parsed
+        nested = data.get("data")
+        if nested is not None:
+            return parse_is_alert(nested)
+        return None
+    if isinstance(data, list):
+        parsed = _parse_alert_list(data)
+        if parsed is not None:
+            return parsed
+    return None
+
+async def fetch_alert_state(client: httpx.AsyncClient, region_id: str) -> Optional[bool]:
+    path = UA_ALARM_ALERT_PATH_TEMPLATE.replace("{regionId}", region_id)
+    data = await ua_get_json(path, client=client)
+    return parse_is_alert(data)
+
+async def ua_region_ids() -> List[str]:
+    if UA_ALARM_REGION_IDS:
+        return UA_ALARM_REGION_IDS
+    rid = await ua_region_oblast()
+    return [rid]
+
+def region_label_for_message(region_ids: List[str]) -> str:
+    if len(region_ids) == 1 and UA_ALARM_OBLAST_NAME:
+        return UA_ALARM_OBLAST_NAME
+    return ", ".join(region_ids)
+
+async def fetch_active_region_ids(client: httpx.AsyncClient) -> Optional[Set[str]]:
+    try:
+        data = await ua_get_json(UA_ALARM_ALERTS_PATH, client=client)
+    except Exception:
+        logger.exception("UA alarm alerts list failed: %s", UA_ALARM_ALERTS_PATH)
+        return None
+    if not isinstance(data, list):
+        return None
+    ids: Set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        rid = item.get("regionId") or item.get("region_id") or ""
+        rid = str(rid).strip()
+        if rid:
+            ids.add(rid)
+    return ids
 
 async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
     if not ua_alarm_enabled():
         return
 
-    subs = [uid for uid, on in ALERTS_ENABLED.items() if on and uid in ALERT_REGION]
+    subs = [uid for uid, on in ALERTS_ENABLED.items() if on and ALERT_REGION.get(uid)]
     if not subs:
         return
 
-    region_ids = sorted({ALERT_REGION[uid] for uid in subs})
+    region_ids = sorted({rid for uid in subs for rid in ALERT_REGION.get(uid, [])})
 
     async with httpx.AsyncClient(timeout=20) as client:
+        active_ids = await fetch_active_region_ids(client)
         for rid in region_ids:
             try:
-                path = UA_ALARM_ALERT_PATH_TEMPLATE.replace("{regionId}", rid)
-                data = await ua_get_json(path, client=client)
-                is_alert = parse_is_alert(data if isinstance(data, dict) else {})
+                is_alert = rid in active_ids if active_ids is not None else await fetch_alert_state(client, rid)
                 if is_alert is None:
                     continue
 
@@ -476,7 +582,7 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
                     msg_en = "🔴 ALERT" if is_alert else "🟢 ALL CLEAR"
 
                     for uid in subs:
-                        if ALERT_REGION.get(uid) == rid:
+                        if rid in ALERT_REGION.get(uid, []):
                             try:
                                 await context.bot.send_message(chat_id=uid, text=t(uid, msg_uk, msg_en))
                             except Exception:
@@ -499,6 +605,7 @@ NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 8)
 SEEN_MAX = env_int("NEWS_SEEN_MAX", 5000)
 _seen_links: Set[str] = set()
 _seen_order: deque[str] = deque()
+_feed_redirects: Dict[str, str] = {}
 
 def remember_link(link: str):
     if link in _seen_links:
@@ -522,15 +629,30 @@ def urgent_by_keywords(title: str, summary: str) -> bool:
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text=text, disable_web_page_preview=False)
 
+async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
+    headers = {"User-Agent": "TelegramBot/1.0"}
+    url = _feed_redirects.get(feed_url, feed_url)
+    r = await client.get(url, headers=headers, follow_redirects=True)
+    if r.is_redirect:
+        location = r.headers.get("location")
+        if not location:
+            r.raise_for_status()
+        redirect_url = str(r.url.join(location))
+        logger.info("RSS redirect: %s -> %s", url, redirect_url)
+        _feed_redirects[feed_url] = redirect_url
+        r = await client.get(redirect_url, headers=headers, follow_redirects=True)
+    if r.status_code >= 400:
+        r.raise_for_status()
+    return r.text
+
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             try:
-                r = await client.get(feed_url, headers={"User-Agent": "TelegramBot/1.0"})
-                r.raise_for_status()
-                feed = feedparser.parse(r.text)
+                feed_text = await fetch_feed_text(client, feed_url)
+                feed = feedparser.parse(feed_text)
 
                 for entry in (feed.entries or [])[:10]:
                     title = getattr(entry, "title", "") or ""
@@ -716,17 +838,35 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(t(uid, "✅ Тривоги вимкнено.", "✅ Alerts disabled."))
         else:
             try:
-                rid = await ua_region_oblast()
-                ALERT_REGION[uid] = rid
-                ALERTS_ENABLED[uid] = True
-                await q.message.reply_text(
-                    t(uid, f"✅ Тривоги увімкнено ({UA_ALARM_OBLAST_NAME}).", f"✅ Alerts enabled ({UA_ALARM_OBLAST_NAME}).")
-                )
+                rids = await ua_region_ids()
             except Exception:
                 await q.message.reply_text(
                     t(uid, "⚠️ Не вдалося увімкнути тривоги (помилка конфігурації/API).",
                        "⚠️ Could not enable alerts (config/API error).")
                 )
+                return
+            ALERT_REGION[uid] = rids
+            ALERTS_ENABLED[uid] = True
+            label = region_label_for_message(rids)
+            if label:
+                await q.message.reply_text(
+                    t(uid, f"✅ Тривоги увімкнено ({label}).", f"✅ Alerts enabled ({label}).")
+                )
+            else:
+                await q.message.reply_text(t(uid, "✅ Тривоги увімкнено.", "✅ Alerts enabled."))
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    active_ids = await fetch_active_region_ids(client)
+                if active_ids is None:
+                    active_ids = set()
+                any_alert = any(rid in active_ids for rid in rids)
+                for rid in rids:
+                    ALERT_LAST_STATE[rid] = rid in active_ids
+                msg_uk = "🔴 ТРИВОГА" if any_alert else "🟢 ВІДБІЙ"
+                msg_en = "🔴 ALERT" if any_alert else "🟢 ALL CLEAR"
+                await q.message.reply_text(t(uid, msg_uk, msg_en))
+            except Exception:
+                logger.exception("alerts status fetch failed for regions %s", rids)
         return
 
     if data == "news:test":
