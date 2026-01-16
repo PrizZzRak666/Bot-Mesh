@@ -869,7 +869,6 @@ def main():
 
     app.add_handler(apply_conv)
     app.add_handler(faq_conv)
-    app.add_handler(CallbackQueryHandler(menu_handler, pattern=r"^(.*)$"))
 
     app.add_error_handler(error_handler)
 
