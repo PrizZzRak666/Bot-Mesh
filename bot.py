@@ -602,29 +602,67 @@ URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",")
 NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
 NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 8)
 
-SEEN_MAX = env_int("NEWS_SEEN_MAX", 5000)
+NEWS_SEEN_MAX = env_int("NEWS_SEEN_MAX", 5000)
+NEWS_MIN_KEYWORDS = env_int("NEWS_MIN_KEYWORDS", 2)
+NEWS_REQUIRE_TITLE_KEYWORD = env_bool("NEWS_REQUIRE_TITLE_KEYWORD", True)
+NEWS_MAX_POSTS_PER_RUN = env_int("NEWS_MAX_POSTS_PER_RUN", 3)
+NEWS_MAX_POSTS_PER_HOUR = env_int("NEWS_MAX_POSTS_PER_HOUR", 12)
 _seen_links: Set[str] = set()
 _seen_order: deque[str] = deque()
 _feed_redirects: Dict[str, str] = {}
+_seen_titles: Set[str] = set()
+_seen_titles_order: deque[str] = deque()
+_news_sent_times: deque[float] = deque()
 
 def remember_link(link: str):
     if link in _seen_links:
         return
     _seen_links.add(link)
     _seen_order.append(link)
-    while len(_seen_order) > SEEN_MAX:
+    while len(_seen_order) > NEWS_SEEN_MAX:
         old = _seen_order.popleft()
         _seen_links.discard(old)
+
+def normalize_title(title: str) -> str:
+    return " ".join((title or "").lower().split())
+
+def remember_title(title: str):
+    if title in _seen_titles:
+        return
+    _seen_titles.add(title)
+    _seen_titles_order.append(title)
+    while len(_seen_titles_order) > NEWS_SEEN_MAX:
+        old = _seen_titles_order.popleft()
+        _seen_titles.discard(old)
 
 def news_config_ok() -> bool:
     return NEWS_ENABLED and bool(NEWS_CHANNEL_ID) and RSS_FEEDS and URGENT_KEYWORDS
 
-def urgent_by_keywords(title: str, summary: str) -> bool:
-    text = (title + "\n" + summary).lower()
+def keyword_hits(text: str) -> int:
+    text = (text or "").lower()
+    hits = 0
     for kw in URGENT_KEYWORDS:
         if kw.lower() in text:
-            return True
-    return False
+            hits += 1
+    return hits
+
+def urgent_by_keywords(title: str, summary: str) -> bool:
+    title_hits = keyword_hits(title)
+    summary_hits = keyword_hits(summary)
+    if NEWS_REQUIRE_TITLE_KEYWORD and title_hits == 0:
+        return False
+    return (title_hits + summary_hits) >= NEWS_MIN_KEYWORDS
+
+def news_rate_ok() -> bool:
+    if NEWS_MAX_POSTS_PER_HOUR <= 0:
+        return True
+    now = time.time()
+    while _news_sent_times and now - _news_sent_times[0] > 3600:
+        _news_sent_times.popleft()
+    return len(_news_sent_times) < NEWS_MAX_POSTS_PER_HOUR
+
+def mark_news_sent():
+    _news_sent_times.append(time.time())
 
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text=text, disable_web_page_preview=False)
@@ -648,6 +686,7 @@ async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
+    posted = 0
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             try:
@@ -655,16 +694,24 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                 feed = feedparser.parse(feed_text)
 
                 for entry in (feed.entries or [])[:10]:
+                    if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
+                        return
+                    if not news_rate_ok():
+                        return
                     title = getattr(entry, "title", "") or ""
                     link = getattr(entry, "link", "") or ""
                     summary = getattr(entry, "summary", "") or ""
+                    title_norm = normalize_title(title)
 
                     if not link or link in _seen_links:
+                        continue
+                    if not title_norm or title_norm in _seen_titles:
                         continue
                     if not urgent_by_keywords(title, summary):
                         continue
 
                     remember_link(link)
+                    remember_title(title_norm)
 
                     short = ""
                     if ai_enabled():
@@ -692,6 +739,8 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                     post += "🔗 Джерело: " + link
 
                     await post_to_channel(context, post)
+                    mark_news_sent()
+                    posted += 1
 
             except Exception:
                 logger.exception("news_job error for feed %s", feed_url)
