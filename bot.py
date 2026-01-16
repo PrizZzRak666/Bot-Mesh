@@ -606,6 +606,53 @@ async def test_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
 
+async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await update.message.reply_text(t(uid, "⛔ Тільки адмін.", "⛔ Admin only."))
+        return
+    query = " ".join(context.args or []).strip().lower()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            data = await ua_get_json(UA_ALARM_REGIONS_PATH, client=client)
+    except Exception:
+        await update.message.reply_text(
+            t(uid, "❌ Не вдалося отримати список регіонів.", "❌ Failed to fetch regions list.")
+        )
+        return
+
+    items = data if isinstance(data, list) else data.get("regions") or data.get("data") or []
+    lines = []
+    for it in items:
+        name = (it.get("name") or it.get("title") or "").strip()
+        rid = str(it.get("regionId") or it.get("id") or it.get("region_id") or "").strip()
+        if not name and not rid:
+            continue
+        if query and query not in name.lower():
+            continue
+        if rid and name:
+            lines.append(f"{rid} — {name}")
+        else:
+            lines.append(name or rid)
+
+    if not lines:
+        await update.message.reply_text(
+            t(uid, "ℹ️ Регіони не знайдені за запитом.", "ℹ️ No regions found for query.")
+        )
+        return
+
+    prefix = "Регіони:\n" if get_lang(uid) == "uk" else "Regions:\n"
+    max_len = 3500
+    chunk = prefix
+    for line in lines:
+        if len(chunk) + len(line) + 1 > max_len:
+            await update.message.reply_text(chunk)
+            chunk = prefix + line + "\n"
+        else:
+            chunk += line + "\n"
+    if chunk.strip():
+        await update.message.reply_text(chunk)
+
 # =========================
 # Menu callback handler (only menu/info/toggles)
 # =========================
@@ -875,6 +922,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("health", health_cmd))
     app.add_handler(CommandHandler("test_channel", test_channel_cmd))
+    app.add_handler(CommandHandler("regions", regions_cmd))
 
     # menu/info callbacks only
     app.add_handler(CallbackQueryHandler(
