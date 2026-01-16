@@ -2,6 +2,7 @@ import os
 import time
 import secrets
 import asyncio
+import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, Optional, Set
@@ -46,6 +47,10 @@ def env_int(name: str, default: int) -> int:
     except Exception:
         return default
 
+LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("bot")
+
 # =========================
 # REQUIRED
 # =========================
@@ -78,6 +83,7 @@ if OPENAI_API_KEY:
         from openai import OpenAI
         _ai_client = OpenAI(api_key=OPENAI_API_KEY)
     except Exception:
+        logger.exception("OpenAI client init failed")
         _ai_client = None
 
 def ai_enabled() -> bool:
@@ -118,6 +124,7 @@ def ai_instructions(user_id: int, mode: str) -> str:
 
 async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
     if not ai_enabled():
+        logger.warning("AI request ignored: client not configured")
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
     try:
         resp = await asyncio.to_thread(
@@ -129,6 +136,7 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
         out = (getattr(resp, "output_text", "") or "").strip()
         return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
     except Exception:
+        logger.exception("AI request failed (user_id=%s mode=%s)", user_id, mode)
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
 
 # =========================
@@ -183,6 +191,10 @@ CONTENT = {
         "cooldown": "⏳ Зачекайте {sec} сек і спробуйте ще раз.",
         "alerts_no_key": "⚠️ Тривоги: ключ не налаштовано.",
         "news_not_cfg": "⚠️ Новини не налаштовано (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
+        "no_rights": "⛔️ Недостатньо прав.",
+        "already_done": "⚠️ Заявку вже оброблено або не знайдено.",
+        "approved_user": "✅ Ваш запит схвалено. Інструкції надійдуть окремо.",
+        "denied_user": "❌ Ваш запит відхилено.",
     },
     "en": {
         "company": (
@@ -230,6 +242,10 @@ CONTENT = {
         "cooldown": "⏳ Please wait {sec} seconds.",
         "alerts_no_key": "⚠️ Alerts: API key not configured.",
         "news_not_cfg": "⚠️ News not configured (NEWS_CHANNEL_ID/RSS_FEEDS/KEYWORDS).",
+        "no_rights": "⛔️ Not authorized.",
+        "already_done": "⚠️ Request already handled or not found.",
+        "approved_user": "✅ Your request was approved. Instructions will follow separately.",
+        "denied_user": "❌ Your request was denied.",
     }
 }
 
@@ -339,14 +355,18 @@ def ua_headers() -> dict:
 
 async def ua_get_json(path: str, client: Optional[httpx.AsyncClient] = None):
     url = UA_ALARM_BASE.rstrip("/") + path
-    if client is None:
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(url, headers=ua_headers())
-            r.raise_for_status()
-            return r.json()
-    r = await client.get(url, headers=ua_headers())
-    r.raise_for_status()
-    return r.json()
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.get(url, headers=ua_headers())
+                r.raise_for_status()
+                return r.json()
+        r = await client.get(url, headers=ua_headers())
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        logger.exception("UA alarm request failed: %s", url)
+        raise
 
 async def ua_load_regions(client: Optional[httpx.AsyncClient] = None):
     if REGION_CACHE:
@@ -369,6 +389,7 @@ async def ua_region_oblast() -> str:
     await ua_load_regions()
     if "oblast" in REGION_CACHE:
         return REGION_CACHE["oblast"]
+    logger.error("UA alarm region not found for oblast=%s", UA_ALARM_OBLAST_NAME)
     raise RuntimeError("Не знайдено regionId області (перевір /regions endpoint та UA_ALARM_OBLAST_NAME).")
 
 def parse_is_alert(data: dict) -> Optional[bool]:
@@ -416,9 +437,8 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
                                 await context.bot.send_message(chat_id=uid, text=t(uid, msg_uk, msg_en))
                             except Exception:
                                 pass
-            except Exception as e:
-                # Логи оставляем простыми, чтобы не шуметь, но не терять проблему полностью.
-                print("alerts_job error:", repr(e))
+            except Exception:
+                logger.exception("alerts_job error for region %s", rid)
                 continue
 
 # =========================
@@ -459,7 +479,6 @@ async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
-
     async with httpx.AsyncClient(timeout=20) as client:
         for feed_url in RSS_FEEDS:
             try:
@@ -490,6 +509,7 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                             )
                             short = (getattr(resp, "output_text", "") or "").strip()
                         except Exception:
+                            logger.exception("News AI summary failed for feed %s", feed_url)
                             short = ""
 
                     post = "🚨 ТЕРМІНОВО\n\n" + title + "\n\n"
@@ -499,8 +519,8 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
 
                     await post_to_channel(context, post)
 
-            except Exception as e:
-                print("news_job error:", feed_url, repr(e))
+            except Exception:
+                logger.exception("news_job error for feed %s", feed_url)
                 continue
 
 # =========================
@@ -786,7 +806,7 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         err = context.error
-        print("ERROR:", repr(err))
+        logger.error("Unhandled error: %r", err)
     except Exception:
         pass
 
@@ -849,6 +869,7 @@ def main():
 
     app.add_handler(apply_conv)
     app.add_handler(faq_conv)
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern=r"^(.*)$"))
 
     app.add_error_handler(error_handler)
 
