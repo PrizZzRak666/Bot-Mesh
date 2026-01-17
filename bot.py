@@ -7,6 +7,8 @@ import json
 import random
 import re
 import calendar
+import base64
+import io
 from datetime import datetime, timedelta, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -18,7 +20,7 @@ import httpx
 import feedparser
 from dateutil import parser as date_parser
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from telegram.error import Forbidden
@@ -1127,6 +1129,11 @@ async def cleanup_after_send(bot, chat_id: object, message) -> None:
     LAST_BOT_MESSAGE_ID[chat_id] = msg_id
 
 async def send_with_cleanup(bot, cleanup_chat_id: object, send_callable, *args, **kwargs):
+    if "text" in kwargs and isinstance(kwargs["text"], str):
+        kwargs["text"] = _append_footer(kwargs["text"], cleanup_chat_id)
+    elif args and isinstance(args[0], str):
+        args = list(args)
+        args[0] = _append_footer(args[0], cleanup_chat_id)
     msg = await send_callable(*args, **kwargs)
     await cleanup_after_send(bot, cleanup_chat_id, msg)
     return msg
@@ -1638,6 +1645,17 @@ NEWS_SUMMARY_SEND_TO_USERS = env_bool("NEWS_SUMMARY_SEND_TO_USERS", True)
 NEWS_SUMMARY_SEND_TO_CHANNEL = env_bool("NEWS_SUMMARY_SEND_TO_CHANNEL", True)
 NEWS_SUMMARY_CHANNEL_LINK = env("NEWS_SUMMARY_CHANNEL_LINK", "")
 
+FOOTER_ENABLED = env_bool("FOOTER_ENABLED", False)
+FOOTER_BOT_LINK = env("FOOTER_BOT_LINK", "")
+FOOTER_CHANNEL_LINK = env("FOOTER_CHANNEL_LINK", "")
+FOOTER_SITE_LINK = env("FOOTER_SITE_LINK", "https://www.ukrainianaviation.com")
+BOT_PUBLIC_LINK = FOOTER_BOT_LINK
+
+NEWS_IMAGE_ENABLED = env_bool("NEWS_IMAGE_ENABLED", False)
+NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
+NEWS_IMAGE_SIZE = env("NEWS_IMAGE_SIZE", "1024x1024")
+NEWS_IMAGE_TIMEOUT_SEC = env_int("NEWS_IMAGE_TIMEOUT_SEC", 20)
+
 def remember_link(link: str):
     if link in _seen_links:
         return
@@ -1844,12 +1862,127 @@ def _parse_summary_times(value: str) -> List[dt_time]:
     tz = _summary_tzinfo()
     return [t.replace(tzinfo=tz) for t in times]
 
-def _summary_channel_link() -> str:
+def _footer_channel_link() -> str:
+    if FOOTER_CHANNEL_LINK:
+        return FOOTER_CHANNEL_LINK
     if NEWS_SUMMARY_CHANNEL_LINK:
         return NEWS_SUMMARY_CHANNEL_LINK
     if NEWS_CHANNEL_ID.startswith("@"):
         return f"https://t.me/{NEWS_CHANNEL_ID[1:]}"
     return ""
+
+def _footer_bot_link() -> str:
+    return FOOTER_BOT_LINK or BOT_PUBLIC_LINK
+
+def _footer_site_link() -> str:
+    return FOOTER_SITE_LINK
+
+FOOTER_MARKER = "\n\nLinks:\n"
+
+def _footer_text(chat_id: object = None) -> str:
+    if not FOOTER_ENABLED:
+        return ""
+    parts: List[str] = []
+    bot_link = _footer_bot_link()
+    if bot_link:
+        parts.append(f"Bot: {bot_link}")
+    channel_link = _footer_channel_link()
+    if channel_link:
+        parts.append(f"Channel: {channel_link}")
+    site_link = _footer_site_link()
+    if site_link:
+        parts.append(f"Site: {site_link}")
+    if not parts:
+        return ""
+    return FOOTER_MARKER + "\n".join(parts)
+
+def _append_footer(text: str, chat_id: object = None) -> str:
+    if not text:
+        return text
+    footer = _footer_text(chat_id)
+    if not footer:
+        return text
+    if FOOTER_MARKER in text:
+        return text
+    if len(text) + len(footer) > 4096:
+        return text
+    return text + footer
+
+async def _init_bot_public_link(application) -> None:
+    global BOT_PUBLIC_LINK
+    if BOT_PUBLIC_LINK:
+        return
+    try:
+        me = await application.bot.get_me()
+        username = getattr(me, "username", "") or ""
+        if username:
+            BOT_PUBLIC_LINK = f"https://t.me/{username}"
+    except Exception:
+        logger.exception("Failed to resolve bot public link")
+
+def _news_image_prompt(title: str, summary: str) -> str:
+    title = (title or "").strip()
+    summary = (summary or "").strip()
+    base = (
+        "Create a single, safe-for-work illustration for a news post about Ukraine. "
+        "If the news is light/positive, make it a playful meme-style image without text. "
+        "If the news is serious/tragic, make it a sober editorial illustration. "
+        "No graphic violence, no gore, no text overlays, no logos."
+    )
+    return f"{base}\n\nTITLE: {title}\nSUMMARY: {summary}"
+
+def _caption_with_footer(text: str, chat_id: object = None, max_len: int = 1024) -> str:
+    if not text:
+        return text
+    footer = _footer_text(chat_id)
+    body = text
+    if footer:
+        body = text
+        if text.endswith(footer):
+            body = text[:-len(footer)]
+    if not footer:
+        return text[:max_len] if len(text) > max_len else text
+    max_body = max_len - len(footer)
+    if max_body <= 0:
+        return text[:max_len]
+    if len(body) > max_body:
+        body = body[:max_body - 1].rstrip() + "…"
+    return body + footer
+
+async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
+    if not (NEWS_IMAGE_ENABLED and ai_enabled()):
+        return None
+    prompt = _news_image_prompt(title, summary)
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.images.generate,
+                model=NEWS_IMAGE_MODEL,
+                prompt=prompt,
+                size=NEWS_IMAGE_SIZE,
+                response_format="b64_json",
+            ),
+            timeout=NEWS_IMAGE_TIMEOUT_SEC,
+        )
+        data = getattr(resp, "data", None) or []
+        if not data:
+            return None
+        item = data[0]
+        b64 = getattr(item, "b64_json", None)
+        if b64:
+            return base64.b64decode(b64)
+        url = getattr(item, "url", None)
+        if url:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url)
+                if r.status_code < 400:
+                    return r.content
+        return None
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("News image generation failed")
+        return None
 
 def _clean_html(text: str) -> str:
     text = (text or "").strip()
@@ -1922,7 +2055,11 @@ def _mark_summary_links(links: List[str]) -> None:
 _load_summary_seen()
 
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
-    await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text=text, disable_web_page_preview=False)
+    await context.bot.send_message(
+        chat_id=NEWS_CHANNEL_ID,
+        text=_append_footer(text, NEWS_CHANNEL_ID),
+        disable_web_page_preview=False,
+    )
 
 async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
     headers = {"User-Agent": "TelegramBot/1.0"}
@@ -2013,7 +2150,16 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                     post += "🔗 Джерело: " + link
 
                     try:
-                        await post_to_channel(context, post)
+                        image_bytes = await _generate_news_image(title, summary)
+                        if image_bytes:
+                            caption = _caption_with_footer(post, NEWS_CHANNEL_ID)
+                            await context.bot.send_photo(
+                                chat_id=NEWS_CHANNEL_ID,
+                                photo=InputFile(io.BytesIO(image_bytes), filename="news.png"),
+                                caption=caption,
+                            )
+                        else:
+                            await post_to_channel(context, post)
                     except Exception:
                         logger.exception("News post failed: %s", link)
                         continue
@@ -2119,9 +2265,6 @@ async def _build_news_summary_text() -> tuple[str, List[str]]:
             break
         sources.append(line)
     body = base + "\n".join(sources)
-    channel_link = _summary_channel_link()
-    if channel_link:
-        body += f"\n\n🔗 Канал: {channel_link}"
     links = [it["link"] for it in items if it.get("link")]
     return body, links
 
@@ -2136,7 +2279,7 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=NEWS_CHANNEL_ID,
-                text=text,
+                text=_append_footer(text, NEWS_CHANNEL_ID),
                 disable_web_page_preview=True,
             )
             delivered = True
@@ -2147,7 +2290,7 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=uid,
-                    text=text,
+                    text=_append_footer(text, uid),
                     disable_web_page_preview=True,
                 )
                 delivered = True
@@ -2211,6 +2354,7 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"AI={'on' if ai_enabled() else 'off'}\n"
         f"NEWS={'on' if news_config_ok() else 'off'}\n"
         f"NEWS_SUMMARY={'on' if NEWS_SUMMARY_ENABLED else 'off'}\n"
+        f"NEWS_IMAGE={'on' if NEWS_IMAGE_ENABLED else 'off'}\n"
         f"ALERTS={'on' if ua_alarm_enabled() else 'off'}"
     )
     await send_with_cleanup(
@@ -2242,7 +2386,10 @@ async def test_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     try:
-        await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text="✅ TEST: бот може писати в канал.")
+        await context.bot.send_message(
+            chat_id=NEWS_CHANNEL_ID,
+            text=_append_footer("✅ TEST: бот може писати в канал.", NEWS_CHANNEL_ID),
+        )
         await send_with_cleanup(
             context.bot,
             update.effective_chat.id,
@@ -3184,6 +3331,7 @@ async def post_init(application):
         await application.bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         logger.exception("Failed to delete webhook")
+    await _init_bot_public_link(application)
     if news_config_ok():
         application.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
     if NEWS_SUMMARY_ENABLED:
