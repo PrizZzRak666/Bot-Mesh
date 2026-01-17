@@ -1984,6 +1984,57 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
         logger.exception("News image generation failed")
         return None
 
+def _summary_image_prompt(headlines: List[str], ai_text: str) -> str:
+    lines = [h for h in headlines if h]
+    bullets = "\n".join([f"- {h}" for h in lines[:6]])
+    base = (
+        "Create a single cover illustration for a Ukraine news digest. "
+        "If the overall tone is positive/light, make it a playful meme-style image without text. "
+        "If the tone is grim/serious, make it a sober editorial illustration. "
+        "No graphic violence, no gore, no text overlays, no logos."
+    )
+    extra = (ai_text or "").strip()
+    if extra:
+        extra = clip(extra, 800)
+        return f"{base}\n\nDIGEST NOTES:\n{extra}\n\nHEADLINES:\n{bullets}"
+    return f"{base}\n\nHEADLINES:\n{bullets}"
+
+async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) -> Optional[bytes]:
+    if not (NEWS_IMAGE_ENABLED and ai_enabled()):
+        return None
+    headlines = [str(it.get("title") or "") for it in items[:8]]
+    prompt = _summary_image_prompt(headlines, ai_text)
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.images.generate,
+                model=NEWS_IMAGE_MODEL,
+                prompt=prompt,
+                size=NEWS_IMAGE_SIZE,
+                response_format="b64_json",
+            ),
+            timeout=NEWS_IMAGE_TIMEOUT_SEC,
+        )
+        data = getattr(resp, "data", None) or []
+        if not data:
+            return None
+        item = data[0]
+        b64 = getattr(item, "b64_json", None)
+        if b64:
+            return base64.b64decode(b64)
+        url = getattr(item, "url", None)
+        if url:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url)
+                if r.status_code < 400:
+                    return r.content
+        return None
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("Summary image generation failed")
+        return None
+
 def _clean_html(text: str) -> str:
     text = (text or "").strip()
     if not text:
@@ -2246,10 +2297,10 @@ async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
         logger.exception("AI summary failed")
         return ""
 
-async def _build_news_summary_text() -> tuple[str, List[str]]:
+async def _build_news_summary_text() -> tuple[str, List[str], str, List[Dict[str, object]]]:
     items = await _collect_summary_items()
     if not items:
-        return "", []
+        return "", [], "", []
     ai_text = await _ai_news_summary(items)
     if not ai_text:
         bullets = "\n".join([f"• {it['title']}" for it in items[:6]])
@@ -2266,17 +2317,25 @@ async def _build_news_summary_text() -> tuple[str, List[str]]:
         sources.append(line)
     body = base + "\n".join(sources)
     links = [it["link"] for it in items if it.get("link")]
-    return body, links
+    return body, links, ai_text, items
 
 async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
     if not NEWS_SUMMARY_ENABLED:
         return
-    text, links = await _build_news_summary_text()
+    text, links, ai_text, items = await _build_news_summary_text()
     if not text:
         return
     delivered = False
+    image_bytes = await _generate_summary_image(items, ai_text)
     if NEWS_SUMMARY_SEND_TO_CHANNEL and NEWS_CHANNEL_ID:
         try:
+            if image_bytes:
+                caption = _caption_with_footer("🗞️ Зведення новин України", NEWS_CHANNEL_ID)
+                await context.bot.send_photo(
+                    chat_id=NEWS_CHANNEL_ID,
+                    photo=InputFile(io.BytesIO(image_bytes), filename="digest.png"),
+                    caption=caption,
+                )
             await context.bot.send_message(
                 chat_id=NEWS_CHANNEL_ID,
                 text=_append_footer(text, NEWS_CHANNEL_ID),
@@ -2288,6 +2347,13 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
     if NEWS_SUMMARY_SEND_TO_USERS and KNOWN_USERS:
         for uid in list(KNOWN_USERS):
             try:
+                if image_bytes:
+                    caption = _caption_with_footer("🗞️ Зведення новин України", uid)
+                    await context.bot.send_photo(
+                        chat_id=uid,
+                        photo=InputFile(io.BytesIO(image_bytes), filename="digest.png"),
+                        caption=caption,
+                    )
                 await context.bot.send_message(
                     chat_id=uid,
                     text=_append_footer(text, uid),
