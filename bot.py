@@ -1620,6 +1620,7 @@ URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",")
 NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
 NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 20)
 NEWS_USE_KEYWORDS = env_bool("NEWS_USE_KEYWORDS", False)
+NEWS_FALLBACK_KEYWORDS = env_bool("NEWS_FALLBACK_KEYWORDS", True)
 NEWS_AI_FILTER_ENABLED = env_bool("NEWS_AI_FILTER_ENABLED", False)
 NEWS_AI_STRICT = env_bool("NEWS_AI_STRICT", False)
 NEWS_AI_MIN_CRITICALITY = env_int("NEWS_AI_MIN_CRITICALITY", 3)
@@ -1650,6 +1651,7 @@ _feed_redirects: Dict[str, str] = {}
 _seen_titles: Set[str] = set()
 _seen_titles_order: deque[str] = deque()
 _news_sent_times: deque[float] = deque()
+_news_job_lock = asyncio.Lock()
 
 NEWS_SUMMARY_ENABLED = env_bool("NEWS_SUMMARY_ENABLED", False)
 NEWS_SUMMARY_TIMES = env("NEWS_SUMMARY_TIMES", "08:00,14:00,20:00")
@@ -1670,6 +1672,34 @@ NEWS_IMAGE_ENABLED = env_bool("NEWS_IMAGE_ENABLED", False)
 NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
 NEWS_IMAGE_SIZE = env("NEWS_IMAGE_SIZE", "1024x1024")
 NEWS_IMAGE_TIMEOUT_SEC = env_int("NEWS_IMAGE_TIMEOUT_SEC", 20)
+NEWS_IMAGE_TEMP_DISABLE_SEC = env_int("NEWS_IMAGE_TEMP_DISABLE_SEC", 900)
+_news_images_disabled_until = 0.0
+
+def _keyword_fallback_enabled() -> bool:
+    return bool(URGENT_KEYWORDS) and (NEWS_USE_KEYWORDS or NEWS_FALLBACK_KEYWORDS)
+
+def _disable_news_images_temporarily(reason: str) -> None:
+    global _news_images_disabled_until
+    if NEWS_IMAGE_TEMP_DISABLE_SEC <= 0:
+        return
+    _news_images_disabled_until = max(_news_images_disabled_until, time.time() + NEWS_IMAGE_TEMP_DISABLE_SEC)
+    logger.warning("News images temporarily disabled for %ss: %s", NEWS_IMAGE_TEMP_DISABLE_SEC, reason)
+
+def _is_permission_denied(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) == 403:
+        return True
+    name = exc.__class__.__name__.lower()
+    if "permissiondenied" in name:
+        return True
+    msg = str(exc).lower()
+    return "organization must be verified" in msg or "permission denied" in msg
+
+def news_images_enabled() -> bool:
+    if not NEWS_IMAGE_ENABLED:
+        return False
+    if time.time() < _news_images_disabled_until:
+        return False
+    return ai_enabled()
 
 def remember_link(link: str):
     if link in _seen_links:
@@ -1738,9 +1768,9 @@ def news_config_ok() -> bool:
     if NEWS_USE_KEYWORDS and not URGENT_KEYWORDS:
         return False
     if not NEWS_USE_KEYWORDS and not NEWS_AI_FILTER_ENABLED:
-        return False
+        return _keyword_fallback_enabled()
     if NEWS_AI_FILTER_ENABLED and not NEWS_USE_KEYWORDS and not ai_configured():
-        return False
+        return _keyword_fallback_enabled()
     return True
 
 def keyword_hits(text: str) -> int:
@@ -2073,7 +2103,7 @@ def _caption_with_footer(text: str, chat_id: object = None, max_len: int = 1024)
     return body + footer
 
 async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
-    if not (NEWS_IMAGE_ENABLED and ai_enabled()):
+    if not news_images_enabled():
         return None
     prompt = _news_image_prompt(title, summary)
     try:
@@ -2104,6 +2134,9 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
         logger.warning("News image generation timed out")
         return None
     except Exception as exc:
+        if _is_permission_denied(exc):
+            _disable_news_images_temporarily("permission denied")
+            return None
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
         logger.exception("News image generation failed")
@@ -2125,7 +2158,7 @@ def _summary_image_prompt(headlines: List[str], ai_text: str) -> str:
     return f"{base}\n\nHEADLINES:\n{bullets}"
 
 async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) -> Optional[bytes]:
-    if not (NEWS_IMAGE_ENABLED and ai_enabled()):
+    if not news_images_enabled():
         return None
     headlines = [str(it.get("title") or "") for it in items[:8]]
     prompt = _summary_image_prompt(headlines, ai_text)
@@ -2157,6 +2190,9 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
         logger.warning("Summary image generation timed out")
         return None
     except Exception as exc:
+        if _is_permission_denied(exc):
+            _disable_news_images_temporarily("permission denied")
+            return None
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
         logger.exception("Summary image generation failed")
@@ -2339,7 +2375,7 @@ async def _publish_news_entry(
         logger.exception("News post failed: %s", link)
         raise
 
-async def news_job(context: ContextTypes.DEFAULT_TYPE):
+async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
     if not RSS_FEEDS or not NEWS_CHANNEL_ID:
@@ -2408,41 +2444,79 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
         remember_title(item["title_norm"])
 
     # AI-selected posts (rate limited)
-    if not NEWS_AI_FILTER_ENABLED:
-        return
-    if not ai_enabled():
-        if candidates:
-            logger.warning("AI unavailable; skipping AI-selected news")
+    if NEWS_AI_FILTER_ENABLED and ai_enabled():
+        # prioritize newest items for scoring
+        candidates.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        if NEWS_AI_MAX_CANDIDATES > 0:
+            candidates = candidates[:NEWS_AI_MAX_CANDIDATES]
+
+        scored: List[tuple[float, Dict[str, object], Dict[str, int]]] = []
+        for item in candidates:
+            ai_scores = await ai_news_scores(item["title"], item["summary"])
+            if not ai_scores:
+                if NEWS_AI_STRICT:
+                    continue
+            else:
+                if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
+                        ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
+                    continue
+            interest_hits = _interest_hits(item["text"])
+            recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
+            score = (
+                (ai_scores["importance"] if ai_scores else 0) * 2 +
+                (ai_scores["criticality"] if ai_scores else 0) * 2 +
+                interest_hits * NEWS_INTEREST_BOOST +
+                recency
+            )
+            scored.append((score, item, ai_scores or {"criticality": 0, "importance": 0}))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        posted = 0
+        for _, item, _ in scored:
+            if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
+                break
+            if not news_rate_ok():
+                break
+            try:
+                await _publish_news_entry(
+                    context,
+                    item["title"],
+                    item["summary"],
+                    item["link"],
+                    urgent=False,
+                )
+            except Exception:
+                continue
+            remember_link(item["link"])
+            remember_title(item["title_norm"])
+            mark_news_sent()
+            posted += 1
         return
 
-    # prioritize newest items for scoring
-    candidates.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    if NEWS_AI_MAX_CANDIDATES > 0:
-        candidates = candidates[:NEWS_AI_MAX_CANDIDATES]
+    if NEWS_AI_FILTER_ENABLED and not ai_enabled() and candidates:
+        logger.warning("AI unavailable; falling back to keyword filter")
+    if not _keyword_fallback_enabled():
+        return
 
-    scored: List[tuple[float, Dict[str, object], Dict[str, int]]] = []
+    keyword_items: List[Dict[str, object]] = []
     for item in candidates:
-        ai_scores = await ai_news_scores(item["title"], item["summary"])
-        if not ai_scores:
-            if NEWS_AI_STRICT:
-                continue
-        else:
-            if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
-                    ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
-                continue
-        interest_hits = _interest_hits(item["text"])
-        recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
-        score = (
-            (ai_scores["importance"] if ai_scores else 0) * 2 +
-            (ai_scores["criticality"] if ai_scores else 0) * 2 +
-            interest_hits * NEWS_INTEREST_BOOST +
-            recency
-        )
-        scored.append((score, item, ai_scores or {"criticality": 0, "importance": 0}))
+        if urgent_by_keywords(item["title"], item["summary"]):
+            hits = keyword_hits(item["title"]) + keyword_hits(item["summary"])
+            item["keyword_hits"] = hits
+            keyword_items.append(item)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    if not keyword_items:
+        return
+
+    keyword_items.sort(
+        key=lambda x: (
+            x.get("keyword_hits", 0),
+            x.get("published") or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
     posted = 0
-    for _, item, _ in scored:
+    for item in keyword_items:
         if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
             break
         if not news_rate_ok():
@@ -2461,6 +2535,13 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
         remember_title(item["title_norm"])
         mark_news_sent()
         posted += 1
+
+async def news_job(context: ContextTypes.DEFAULT_TYPE):
+    if _news_job_lock.locked():
+        logger.info("news_job skipped: previous run still in progress")
+        return
+    async with _news_job_lock:
+        await _news_job_inner(context)
 
 async def _collect_summary_items() -> List[Dict[str, object]]:
     if not RSS_FEEDS:
@@ -3619,7 +3700,12 @@ async def post_init(application):
         logger.exception("Failed to delete webhook")
     await _init_bot_public_link(application)
     if news_config_ok():
-        application.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
+        application.job_queue.run_repeating(
+            news_job,
+            interval=NEWS_POLL_SEC,
+            first=15,
+            job_kwargs={"max_instances": 2, "coalesce": True},
+        )
     if NEWS_SUMMARY_ENABLED:
         for t in _parse_summary_times(NEWS_SUMMARY_TIMES):
             application.job_queue.run_daily(news_summary_job, time=t)
