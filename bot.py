@@ -98,9 +98,12 @@ AI_MODEL = env("AI_MODEL", "gpt-5")
 AI_TEMP_DISABLE_SEC = env_int("AI_TEMP_DISABLE_SEC", 900)
 AI_TIMEOUT_SEC = env_int("AI_TIMEOUT_SEC", 30)
 AI_INPUT_MAX_CHARS = env_int("AI_INPUT_MAX_CHARS", 3000)
+AI_TIMEOUT_BACKOFF_COUNT = env_int("AI_TIMEOUT_BACKOFF_COUNT", 3)
+AI_TIMEOUT_BACKOFF_WINDOW_SEC = env_int("AI_TIMEOUT_BACKOFF_WINDOW_SEC", 300)
 
 _ai_client = None
 _ai_disabled_until = 0.0
+_ai_timeout_hits: deque[float] = deque()
 if OPENAI_API_KEY:
     try:
         from openai import OpenAI
@@ -134,6 +137,17 @@ def _ai_disable_temporarily(reason: str):
         return
     _ai_disabled_until = max(_ai_disabled_until, time.time() + AI_TEMP_DISABLE_SEC)
     logger.warning("AI temporarily disabled for %ss: %s", AI_TEMP_DISABLE_SEC, reason)
+
+def _ai_register_timeout(context: str) -> None:
+    if AI_TIMEOUT_BACKOFF_COUNT <= 0 or AI_TIMEOUT_BACKOFF_WINDOW_SEC <= 0:
+        return
+    now = time.time()
+    _ai_timeout_hits.append(now)
+    while _ai_timeout_hits and now - _ai_timeout_hits[0] > AI_TIMEOUT_BACKOFF_WINDOW_SEC:
+        _ai_timeout_hits.popleft()
+    if len(_ai_timeout_hits) >= AI_TIMEOUT_BACKOFF_COUNT:
+        _ai_disable_temporarily(f"timeouts in {context}")
+        _ai_timeout_hits.clear()
 
 def ai_instructions(user_id: int, mode: str) -> str:
     base_rules = (
@@ -186,6 +200,7 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
         out = (getattr(resp, "output_text", "") or "").strip()
         return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
     except asyncio.TimeoutError:
+        _ai_register_timeout("ask_ai")
         logger.warning("AI request timed out (user_id=%s mode=%s)", user_id, mode)
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
     except Exception as exc:
@@ -1653,6 +1668,9 @@ NEWS_INTEREST_BOOST = env_int("NEWS_INTEREST_BOOST", 2)
 NEWS_RECENCY_BOOST = env_int("NEWS_RECENCY_BOOST", 6)
 NEWS_TITLE_SIM_THRESHOLD = env_float("NEWS_TITLE_SIM_THRESHOLD", 0.82)
 NEWS_TITLE_SIM_MIN_TOKENS = env_int("NEWS_TITLE_SIM_MIN_TOKENS", 4)
+NEWS_TITLE_SIM_SEEN_MAX = env_int("NEWS_TITLE_SIM_SEEN_MAX", 800)
+NEWS_WHITELIST_KEYWORDS = [k.strip() for k in env("NEWS_WHITELIST_KEYWORDS", "").split(",") if k.strip()]
+NEWS_WHITELIST_BOOST = env_int("NEWS_WHITELIST_BOOST", 3)
 NEWS_DEPRIORITY_KEYWORDS = [
     k.strip() for k in env(
         "NEWS_DEPRIORITY_KEYWORDS",
@@ -1673,6 +1691,9 @@ _seen_order: deque[str] = deque()
 _feed_redirects: Dict[str, str] = {}
 _seen_titles: Set[str] = set()
 _seen_titles_order: deque[str] = deque()
+_seen_title_tokens_sigs: Set[str] = set()
+_seen_title_tokens_order: deque[str] = deque()
+_seen_title_tokens_sets: deque[Set[str]] = deque()
 _news_sent_times: deque[float] = deque()
 _news_job_lock = asyncio.Lock()
 
@@ -1768,6 +1789,11 @@ def _title_tokens(text: str) -> Set[str]:
         out.add(tok)
     return out
 
+def _title_signature(tokens: Set[str]) -> str:
+    if not tokens:
+        return ""
+    return " ".join(sorted(tokens))
+
 def _title_similarity(a: Set[str], b: Set[str]) -> float:
     if not a or not b:
         return 0.0
@@ -1825,6 +1851,7 @@ def _load_news_seen() -> None:
         return
     links = data.get("links") if isinstance(data, dict) else None
     titles = data.get("titles") if isinstance(data, dict) else None
+    title_tokens = data.get("title_tokens") if isinstance(data, dict) else None
     if isinstance(links, list):
         for link in links:
             if not isinstance(link, str):
@@ -1840,6 +1867,42 @@ def _load_news_seen() -> None:
                 continue
             _seen_titles.add(title)
             _seen_titles_order.append(title)
+    if isinstance(title_tokens, list):
+        for item in title_tokens:
+            tokens: Set[str] = set()
+            if isinstance(item, list):
+                tokens = {str(x) for x in item if str(x)}
+            elif isinstance(item, str):
+                tokens = {t for t in item.split() if t}
+            if not tokens:
+                continue
+            sig = _title_signature(tokens)
+            if not sig or sig in _seen_title_tokens_sigs:
+                continue
+            _seen_title_tokens_sigs.add(sig)
+            _seen_title_tokens_order.append(sig)
+            _seen_title_tokens_sets.append(tokens)
+            while len(_seen_title_tokens_order) > NEWS_TITLE_SIM_SEEN_MAX:
+                old_sig = _seen_title_tokens_order.popleft()
+                _seen_title_tokens_sigs.discard(old_sig)
+                if _seen_title_tokens_sets:
+                    _seen_title_tokens_sets.popleft()
+    elif _seen_titles_order:
+        for title in _seen_titles_order:
+            tokens = _title_tokens(title)
+            if len(tokens) < max(1, NEWS_TITLE_SIM_MIN_TOKENS):
+                continue
+            sig = _title_signature(tokens)
+            if not sig or sig in _seen_title_tokens_sigs:
+                continue
+            _seen_title_tokens_sigs.add(sig)
+            _seen_title_tokens_order.append(sig)
+            _seen_title_tokens_sets.append(tokens)
+            while len(_seen_title_tokens_order) > NEWS_TITLE_SIM_SEEN_MAX:
+                old_sig = _seen_title_tokens_order.popleft()
+                _seen_title_tokens_sigs.discard(old_sig)
+                if _seen_title_tokens_sets:
+                    _seen_title_tokens_sets.popleft()
 
 def _save_news_seen() -> None:
     try:
@@ -1847,6 +1910,7 @@ def _save_news_seen() -> None:
         payload = {
             "links": list(_seen_order),
             "titles": list(_seen_titles_order),
+            "title_tokens": list(_seen_title_tokens_order),
         }
         NEWS_SEEN_FILE.write_text(json.dumps(payload), encoding="utf-8")
     except Exception:
@@ -1860,6 +1924,23 @@ def remember_title(title: str):
     while len(_seen_titles_order) > NEWS_SEEN_MAX:
         old = _seen_titles_order.popleft()
         _seen_titles.discard(old)
+    _save_news_seen()
+
+def remember_title_tokens(title: str) -> None:
+    tokens = _title_tokens(title)
+    if len(tokens) < max(1, NEWS_TITLE_SIM_MIN_TOKENS):
+        return
+    sig = _title_signature(tokens)
+    if not sig or sig in _seen_title_tokens_sigs:
+        return
+    _seen_title_tokens_sigs.add(sig)
+    _seen_title_tokens_order.append(sig)
+    _seen_title_tokens_sets.append(tokens)
+    while len(_seen_title_tokens_order) > NEWS_TITLE_SIM_SEEN_MAX:
+        old_sig = _seen_title_tokens_order.popleft()
+        _seen_title_tokens_sigs.discard(old_sig)
+        if _seen_title_tokens_sets:
+            _seen_title_tokens_sets.popleft()
     _save_news_seen()
 
 _load_news_seen()
@@ -1895,6 +1976,16 @@ def _interest_hits(text: str) -> int:
         for kw in URGENT_KEYWORDS:
             if kw.lower() in text:
                 hits += 1
+    return hits
+
+def _whitelist_hits(text: str) -> int:
+    text = (text or "").lower()
+    if not text or not NEWS_WHITELIST_KEYWORDS:
+        return 0
+    hits = 0
+    for kw in NEWS_WHITELIST_KEYWORDS:
+        if kw.lower() in text:
+            hits += 1
     return hits
 
 def _deprioritize_hits(text: str) -> int:
@@ -1993,6 +2084,7 @@ async def ai_contact_triage(user_id: int, question: str) -> Optional[Dict[str, o
             return None
         return {"can_answer": True, "answer": answer}
     except asyncio.TimeoutError:
+        _ai_register_timeout("contact_triage")
         logger.warning("Contact AI triage timed out")
         return None
     except Exception as exc:
@@ -2056,6 +2148,7 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
         imp = max(0, min(max_score, imp))
         return {"criticality": crit, "importance": imp}
     except asyncio.TimeoutError:
+        _ai_register_timeout("news_scoring")
         logger.warning("News AI scoring timed out")
         return None
     except Exception as exc:
@@ -2089,6 +2182,7 @@ async def ai_news_bullets(title: str, summary: str) -> str:
         out = (getattr(resp, "output_text", "") or "").strip()
         return out
     except asyncio.TimeoutError:
+        _ai_register_timeout("news_bullets")
         logger.warning("News AI bullets timed out")
         return ""
     except Exception as exc:
@@ -2251,6 +2345,7 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
                 logger.warning("News image download failed: %s", r.status_code)
         return None
     except asyncio.TimeoutError:
+        _ai_register_timeout("news_image")
         logger.warning("News image generation timed out")
         return None
     except Exception as exc:
@@ -2312,6 +2407,7 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
                 logger.warning("Summary image download failed: %s", r.status_code)
         return None
     except asyncio.TimeoutError:
+        _ai_register_timeout("summary_image")
         logger.warning("Summary image generation timed out")
         return None
     except Exception as exc:
@@ -2365,10 +2461,11 @@ def _load_summary_seen() -> None:
         for item in data:
             if not isinstance(item, str):
                 continue
-            if item in _summary_seen:
+            key = normalize_link(item)
+            if not key or key in _summary_seen:
                 continue
-            _summary_seen.add(item)
-            _summary_seen_order.append(item)
+            _summary_seen.add(key)
+            _summary_seen_order.append(key)
 
 def _save_summary_seen() -> None:
     try:
@@ -2380,10 +2477,11 @@ def _save_summary_seen() -> None:
 def _mark_summary_links(links: List[str]) -> None:
     changed = False
     for link in links:
-        if link in _summary_seen:
+        key = normalize_link(link)
+        if not key or key in _summary_seen:
             continue
-        _summary_seen.add(link)
-        _summary_seen_order.append(link)
+        _summary_seen.add(key)
+        _summary_seen_order.append(key)
         changed = True
         while len(_summary_seen_order) > NEWS_SUMMARY_SEEN_MAX:
             old = _summary_seen_order.popleft()
@@ -2601,29 +2699,34 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     run_seen_links: Set[str] = set()
     run_seen_titles: Set[str] = set()
     run_seen_title_tokens: List[Set[str]] = []
-    stats = {
-        "feeds_ok": 0,
-        "entries": 0,
-        "skipped_no_link": 0,
-        "skipped_seen_link": 0,
-        "skipped_run_link": 0,
-        "skipped_no_title": 0,
-        "skipped_seen_title": 0,
-        "skipped_run_title": 0,
-        "skipped_similar_title": 0,
-        "skipped_old": 0,
-        "urgent": 0,
-        "candidate": 0,
-    }
+    stat_keys = [
+        "feeds_ok",
+        "entries",
+        "skipped_no_link",
+        "skipped_seen_link",
+        "skipped_run_link",
+        "skipped_no_title",
+        "skipped_seen_title",
+        "skipped_run_title",
+        "skipped_similar_title",
+        "skipped_old",
+        "urgent",
+        "candidate",
+    ]
+    stats = {k: 0 for k in stat_keys}
+    feed_stats: Dict[str, Dict[str, int]] = {}
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
+            fs = feed_stats.setdefault(feed_url, {k: 0 for k in stat_keys})
             try:
                 feed_text = await fetch_feed_text(client, feed_url)
                 feed = feedparser.parse(feed_text)
                 stats["feeds_ok"] += 1
+                fs["feeds_ok"] += 1
                 for entry in (feed.entries or [])[:20]:
                     stats["entries"] += 1
+                    fs["entries"] += 1
                     title = getattr(entry, "title", "") or ""
                     link = getattr(entry, "link", "") or ""
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
@@ -2633,24 +2736,31 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
                     if not link_key:
                         stats["skipped_no_link"] += 1
+                        fs["skipped_no_link"] += 1
                         continue
                     if link_key in _seen_links:
                         stats["skipped_seen_link"] += 1
+                        fs["skipped_seen_link"] += 1
                         continue
                     if link_key in run_seen_links:
                         stats["skipped_run_link"] += 1
+                        fs["skipped_run_link"] += 1
                         continue
                     if not title_norm:
                         stats["skipped_no_title"] += 1
+                        fs["skipped_no_title"] += 1
                         continue
                     if title_norm in _seen_titles:
                         stats["skipped_seen_title"] += 1
+                        fs["skipped_seen_title"] += 1
                         continue
                     if title_norm in run_seen_titles:
                         stats["skipped_run_title"] += 1
+                        fs["skipped_run_title"] += 1
                         continue
-                    if _is_similar_title(title_tokens, run_seen_title_tokens):
+                    if _is_similar_title(title_tokens, run_seen_title_tokens) or _is_similar_title(title_tokens, _seen_title_tokens_sets):
                         stats["skipped_similar_title"] += 1
+                        fs["skipped_similar_title"] += 1
                         logger.debug("Skip similar title: %s", clip(title, 120))
                         continue
 
@@ -2659,6 +2769,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
                     text = f"{title}\n{summary}"
                     deprior_hits = _deprioritize_hits(text)
+                    whitelist_hits = _whitelist_hits(text)
                     item = {
                         "title": title,
                         "link": link,
@@ -2668,17 +2779,21 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         "age_hours": age_hours,
                         "text": text,
                         "deprior_hits": deprior_hits,
+                        "whitelist_hits": whitelist_hits,
                     }
 
                     if _blast_hits(text):
                         urgent_items.append(item)
                         stats["urgent"] += 1
+                        fs["urgent"] += 1
                     else:
                         if NEWS_MAX_AGE_HOURS > 0 and age_hours > NEWS_MAX_AGE_HOURS:
                             stats["skipped_old"] += 1
+                            fs["skipped_old"] += 1
                             continue
                         candidates.append(item)
                         stats["candidate"] += 1
+                        fs["candidate"] += 1
                     run_seen_links.add(link_key)
                     run_seen_titles.add(title_norm)
                     if title_tokens:
@@ -2704,6 +2819,24 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         stats["skipped_similar_title"],
         stats["skipped_old"],
     )
+    for feed_url, fs in feed_stats.items():
+        logger.info(
+            "News feed stats: url=%s entries=%s urgent=%s candidates=%s "
+            "skipped_no_link=%s skipped_no_title=%s skipped_seen_link=%s skipped_seen_title=%s "
+            "skipped_run_link=%s skipped_run_title=%s skipped_similar_title=%s skipped_old=%s",
+            feed_url,
+            fs["entries"],
+            fs["urgent"],
+            fs["candidate"],
+            fs["skipped_no_link"],
+            fs["skipped_no_title"],
+            fs["skipped_seen_link"],
+            fs["skipped_seen_title"],
+            fs["skipped_run_link"],
+            fs["skipped_run_title"],
+            fs["skipped_similar_title"],
+            fs["skipped_old"],
+        )
 
     # publish urgent blast news immediately (no hourly limit)
     urgent_items.sort(
@@ -2723,6 +2856,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             continue
         remember_link(item["link"])
         remember_title(item["title_norm"])
+        remember_title_tokens(item["title"])
 
     # AI-selected posts (rate limited)
     if NEWS_AI_FILTER_ENABLED and ai_enabled():
@@ -2744,10 +2878,12 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             interest_hits = _interest_hits(item["text"])
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
             deprior_hits = item.get("deprior_hits", 0) or 0
+            whitelist_hits = item.get("whitelist_hits", 0) or 0
             score = (
                 (ai_scores["importance"] if ai_scores else 0) * 2 +
                 (ai_scores["criticality"] if ai_scores else 0) * 2 +
                 interest_hits * NEWS_INTEREST_BOOST +
+                whitelist_hits * NEWS_WHITELIST_BOOST +
                 recency -
                 deprior_hits * NEWS_DEPRIORITY_PENALTY
             )
@@ -2772,6 +2908,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                 continue
             remember_link(item["link"])
             remember_title(item["title_norm"])
+            remember_title_tokens(item["title"])
             mark_news_sent()
             posted += 1
         return
@@ -2787,8 +2924,14 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             hits = keyword_hits(item["title"]) + keyword_hits(item["summary"])
             item["keyword_hits"] = hits
             deprior_hits = item.get("deprior_hits", 0) or 0
+            whitelist_hits = item.get("whitelist_hits", 0) or 0
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
-            item["score"] = hits * 10 + recency - deprior_hits * NEWS_DEPRIORITY_PENALTY
+            item["score"] = (
+                hits * 10 +
+                recency +
+                whitelist_hits * NEWS_WHITELIST_BOOST -
+                deprior_hits * NEWS_DEPRIORITY_PENALTY
+            )
             keyword_items.append(item)
 
     if not keyword_items:
@@ -2819,6 +2962,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             continue
         remember_link(item["link"])
         remember_title(item["title_norm"])
+        remember_title_tokens(item["title"])
         mark_news_sent()
         posted += 1
 
@@ -2843,9 +2987,10 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
                 for entry in (feed.entries or [])[:30]:
                     title = getattr(entry, "title", "") or ""
                     link = getattr(entry, "link", "") or ""
-                    if not title or not link or link in seen:
+                    link_key = normalize_link(link)
+                    if not title or not link_key or link_key in seen:
                         continue
-                    if link in _summary_seen:
+                    if link_key in _summary_seen:
                         continue
                     published = _entry_datetime(entry)
                     if published and published < cutoff:
@@ -2853,11 +2998,11 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
                     items.append({
                         "title": title.strip(),
-                        "link": link.strip(),
+                        "link": link_key.strip(),
                         "summary": _clean_html(summary),
                         "published": published,
                     })
-                    seen.add(link)
+                    seen.add(link_key)
             except Exception:
                 logger.exception("summary feed error for %s", feed_url)
                 continue
@@ -2899,6 +3044,7 @@ async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
         out = (getattr(resp, "output_text", "") or "").strip()
         return out
     except asyncio.TimeoutError:
+        _ai_register_timeout("news_summary")
         logger.warning("AI summary timed out")
         return ""
     except Exception as exc:
