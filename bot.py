@@ -1720,6 +1720,10 @@ NEWS_SUMMARY_CHANNEL_LINK = env("NEWS_SUMMARY_CHANNEL_LINK", "")
 
 NEWS_STATS_ENABLED = env_bool("NEWS_STATS_ENABLED", True)
 NEWS_STATS_RETENTION_HOURS = env_int("NEWS_STATS_RETENTION_HOURS", 168)
+NEWS_SKIP_STATS_ENABLED = env_bool("NEWS_SKIP_STATS_ENABLED", True)
+NEWS_SKIP_STATS_RETENTION_HOURS = env_int("NEWS_SKIP_STATS_RETENTION_HOURS", 168)
+NEWS_KEYWORD_SUGGEST_MIN_FREQ = env_int("NEWS_KEYWORD_SUGGEST_MIN_FREQ", 3)
+NEWS_KEYWORD_SUGGEST_MAX = env_int("NEWS_KEYWORD_SUGGEST_MAX", 20)
 
 FOOTER_ENABLED = env_bool("FOOTER_ENABLED", False)
 FOOTER_BOT_LINK = env("FOOTER_BOT_LINK", "")
@@ -1803,6 +1807,13 @@ def _title_tokens(text: str) -> Set[str]:
             continue
         out.add(tok)
     return out
+
+def _content_tokens(title: str, summary: str) -> List[str]:
+    tokens = set()
+    tokens.update(_title_tokens(title))
+    if summary:
+        tokens.update(_title_tokens(summary))
+    return list(sorted(tokens))[:20]
 
 def _title_signature(tokens: Set[str]) -> str:
     if not tokens:
@@ -2587,6 +2598,8 @@ _load_summary_seen()
 
 NEWS_STATS_FILE = Path("data/news_stats.json")
 _news_stats: deque[Dict[str, object]] = deque()
+NEWS_SKIP_STATS_FILE = Path("data/news_skip_stats.json")
+_news_skip_stats: deque[Dict[str, object]] = deque()
 
 def _trim_news_stats() -> None:
     if NEWS_STATS_RETENTION_HOURS <= 0:
@@ -2653,6 +2666,80 @@ def _top_counts(items: List[Dict[str, object]], key: str, limit: int) -> List[tu
     return sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
 
 _load_news_stats()
+
+def _trim_news_skip_stats() -> None:
+    if NEWS_SKIP_STATS_RETENTION_HOURS <= 0:
+        _news_skip_stats.clear()
+        return
+    cutoff = time.time() - NEWS_SKIP_STATS_RETENTION_HOURS * 3600
+    while _news_skip_stats and float(_news_skip_stats[0].get("ts") or 0) < cutoff:
+        _news_skip_stats.popleft()
+
+def _load_news_skip_stats() -> None:
+    if not NEWS_SKIP_STATS_FILE.exists():
+        return
+    try:
+        data = json.loads(NEWS_SKIP_STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load news skip stats")
+        return
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            _news_skip_stats.append(item)
+    _trim_news_skip_stats()
+
+def _save_news_skip_stats() -> None:
+    try:
+        NEWS_SKIP_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        NEWS_SKIP_STATS_FILE.write_text(json.dumps(list(_news_skip_stats)), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save news skip stats")
+
+def _record_news_skip(reason: str, title: str, summary: str, feed_url: str = "", meta: Optional[Dict[str, object]] = None) -> None:
+    if not NEWS_SKIP_STATS_ENABLED:
+        return
+    tokens = _content_tokens(title, summary)
+    _news_skip_stats.append({
+        "ts": time.time(),
+        "reason": reason,
+        "feed": feed_url,
+        "tokens": tokens,
+        "meta": meta or {},
+    })
+    _trim_news_skip_stats()
+    _save_news_skip_stats()
+
+def _skip_window(hours: int) -> List[Dict[str, object]]:
+    if hours <= 0:
+        return []
+    cutoff = time.time() - hours * 3600
+    return [it for it in _news_skip_stats if float(it.get("ts") or 0) >= cutoff]
+
+def _suggest_keywords(hours: int, reasons: Optional[Set[str]] = None) -> List[tuple[str, int]]:
+    items = _skip_window(hours)
+    if reasons:
+        items = [it for it in items if it.get("reason") in reasons]
+    existing = set()
+    for pool in (URGENT_KEYWORDS, NEWS_INTEREST_KEYWORDS, NEWS_WHITELIST_KEYWORDS, NEWS_DEPRIORITY_KEYWORDS, NEWS_BLOCK_KEYWORDS):
+        existing.update([k.lower() for k in pool])
+    counts: Dict[str, int] = {}
+    for it in items:
+        tokens = it.get("tokens") or []
+        for tok in tokens:
+            t = str(tok).lower()
+            if not t or t in existing:
+                continue
+            if t.isdigit():
+                continue
+            counts[t] = counts.get(t, 0) + 1
+    min_freq = max(1, NEWS_KEYWORD_SUGGEST_MIN_FREQ)
+    pairs = [(tok, cnt) for tok, cnt in counts.items() if cnt >= min_freq]
+    pairs.sort(key=lambda x: x[1], reverse=True)
+    return pairs[:max(1, NEWS_KEYWORD_SUGGEST_MAX)]
+
+_load_news_skip_stats()
 
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(
@@ -2978,6 +3065,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         stats["skipped_similar_title"] += 1
                         fs["skipped_similar_title"] += 1
                         logger.debug("Skip similar title: %s", clip(title, 120))
+                        _record_news_skip("similar_title", title, summary, feed_url)
                         continue
 
                     published = _entry_datetime(entry)
@@ -2988,9 +3076,11 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     if block_hits > 0:
                         stats["skipped_block_kw"] += 1
                         fs["skipped_block_kw"] += 1
+                        _record_news_skip("blocked_kw", title, summary, feed_url)
                         continue
                     deprior_hits = _deprioritize_hits(text)
                     whitelist_hits = _whitelist_hits(text)
+                    interest_hits = _interest_hits(text)
                     item = {
                         "title": title,
                         "link": link,
@@ -3002,6 +3092,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         "text": text,
                         "deprior_hits": deprior_hits,
                         "whitelist_hits": whitelist_hits,
+                        "interest_hits": interest_hits,
                     }
 
                     if _blast_hits(text):
@@ -3012,6 +3103,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         if NEWS_MAX_AGE_HOURS > 0 and age_hours > NEWS_MAX_AGE_HOURS:
                             stats["skipped_old"] += 1
                             fs["skipped_old"] += 1
+                            _record_news_skip("old", title, summary, feed_url, {"age_hours": age_hours})
                             continue
                         candidates.append(item)
                         stats["candidate"] += 1
@@ -3084,9 +3176,11 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         key=lambda x: x.get("published") or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    for item in urgent_items:
+    for idx, item in enumerate(urgent_items):
         if not urgent_rate_ok():
             logger.info("Urgent rate limit reached")
+            for rest in urgent_items[idx:]:
+                _record_news_skip("urgent_rate_limited", rest["title"], rest["summary"], rest.get("feed_url") or "")
             break
         try:
             await _publish_news_entry(
@@ -3116,12 +3210,20 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             ai_scores = await ai_news_scores(item["title"], item["summary"])
             if not ai_scores:
                 if NEWS_AI_STRICT:
+                    _record_news_skip("ai_no_score", item["title"], item["summary"], item.get("feed_url") or "")
                     continue
             else:
                 if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
                         ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
+                    _record_news_skip(
+                        "ai_below_threshold",
+                        item["title"],
+                        item["summary"],
+                        item.get("feed_url") or "",
+                        {"criticality": ai_scores["criticality"], "importance": ai_scores["importance"]},
+                    )
                     continue
-            interest_hits = _interest_hits(item["text"])
+            interest_hits = item.get("interest_hits", 0) or 0
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
             deprior_hits = item.get("deprior_hits", 0) or 0
             whitelist_hits = item.get("whitelist_hits", 0) or 0
@@ -3139,10 +3241,14 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
         scored.sort(key=lambda x: x[0], reverse=True)
         posted = 0
-        for _, item, _ in scored:
+        for idx, (_, item, _) in enumerate(scored):
             if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
+                for _, rest, _ in scored[idx:]:
+                    _record_news_skip("max_per_run", rest["title"], rest["summary"], rest.get("feed_url") or "")
                 break
             if not news_rate_ok():
+                for _, rest, _ in scored[idx:]:
+                    _record_news_skip("rate_limited", rest["title"], rest["summary"], rest.get("feed_url") or "")
                 break
             try:
                 await _publish_news_entry(
@@ -3184,6 +3290,9 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                 feed_boost
             )
             keyword_items.append(item)
+        else:
+            if (item.get("whitelist_hits", 0) or item.get("interest_hits", 0)):
+                _record_news_skip("keyword_no_match", item["title"], item["summary"], item.get("feed_url") or "")
 
     if not keyword_items:
         return
@@ -3196,10 +3305,14 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         reverse=True,
     )
     posted = 0
-    for item in keyword_items:
+    for idx, item in enumerate(keyword_items):
         if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
+            for rest in keyword_items[idx:]:
+                _record_news_skip("max_per_run", rest["title"], rest["summary"], rest.get("feed_url") or "")
             break
         if not news_rate_ok():
+            for rest in keyword_items[idx:]:
+                _record_news_skip("rate_limited", rest["title"], rest["summary"], rest.get("feed_url") or "")
             break
         try:
             await _publish_news_entry(
@@ -3740,6 +3853,87 @@ async def news_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     feed_lines = "\n".join([f"• {cnt} — {feed}" for feed, cnt in feeds]) or "• —"
     topic_lines = "\n".join([f"• {cnt} — {tok}" for tok, cnt in topics]) or "• —"
     text = header + "\nSources:\n" + feed_lines + "\n\nTopics:\n" + topic_lines
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        clip(text, 3800),
+        reply_markup=menu_only_kb(uid),
+    )
+
+async def news_keywords_suggest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_SKIP_STATS_ENABLED:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Лог пропусків вимкнено.", "ℹ️ Skip stats are disabled."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    raw_hours = (context.args[0] if context.args else "24").strip().lower()
+    reason_arg = (context.args[1] if len(context.args) > 1 else "").strip().lower()
+    hours = 24
+    if raw_hours.endswith("d"):
+        try:
+            hours = max(1, int(raw_hours[:-1])) * 24
+        except Exception:
+            hours = 24
+    else:
+        try:
+            hours = max(1, int(raw_hours))
+        except Exception:
+            hours = 24
+
+    reason_map = {
+        "ai": {"ai_below_threshold", "ai_no_score"},
+        "rate": {"rate_limited", "max_per_run", "urgent_rate_limited"},
+        "keyword": {"keyword_no_match"},
+        "all": set(),
+    }
+    default_reasons = {"ai_below_threshold", "ai_no_score", "keyword_no_match", "rate_limited", "max_per_run", "urgent_rate_limited"}
+    if reason_arg:
+        reasons = reason_map.get(reason_arg, {reason_arg})
+        if reason_arg == "all":
+            reasons = set()
+    else:
+        reasons = default_reasons
+
+    items = _skip_window(hours)
+    if not items:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Немає даних за цей період.", "ℹ️ No data for this period."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    reason_counts = _top_counts(items, "reason", 8)
+    suggestions = _suggest_keywords(hours, reasons if reasons else None)
+    reasons_line = ", ".join(sorted(reasons)) if reasons else "all"
+    lines = [f"🧪 Keyword suggestions ({hours}h, reasons: {reasons_line})"]
+    if reason_counts:
+        lines.append("Reasons:")
+        lines.extend([f"• {cnt} — {reason}" for reason, cnt in reason_counts])
+    if suggestions:
+        lines.append("")
+        lines.append("Suggestions:")
+        lines.extend([f"• {cnt} — {tok}" for tok, cnt in suggestions])
+    else:
+        lines.append("")
+        lines.append("Suggestions: —")
+    text = "\n".join(lines)
     await send_with_cleanup(
         context.bot,
         update.effective_chat.id,
@@ -4768,6 +4962,7 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
     app.add_handler(CommandHandler("news_stats", news_stats_cmd))
+    app.add_handler(CommandHandler("news_keywords_suggest", news_keywords_suggest_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("regions", regions_cmd))
 
