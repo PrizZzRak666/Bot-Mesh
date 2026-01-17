@@ -229,9 +229,7 @@ CONTENT = {
             "• обмін без публікації технічних ключів чи налаштувань\n\n"
             "💙 Проєкт безкоштовний для користувачів і фінансується як волонтерська ініціатива.\n\n"
             "Публічно не розкриваємо технічні параметри й інструкції підключення.\n"
-            "Підключення — лише після підтвердження."
-        ),
-        "gear": (
+            "Підключення — лише після підтвердження.\n\n"
             "📦 **Обладнання**\n\n"
             "Потрібен сумісний пристрій Meshtastic (портативний вузол), джерело живлення та клієнт для керування.\n\n"
             "Необхідне:\n"
@@ -251,8 +249,7 @@ CONTENT = {
             "• зовнішня антена\n"
             "• запасна батарея/повербанк або сонячне живлення\n"
             "• GPS (за потреби)\n\n"
-            "Офіційний список: https://meshtastic.org/docs/hardware/devices/\n"
-            "Технічні параметри та інструкції підключення публічно не розкриваємо."
+            "Офіційний список: https://meshtastic.org/docs/hardware/devices/"
         ),
         "service": (
             "🛠️ **Сервісне обслуговування продуктів**\n\n"
@@ -370,9 +367,7 @@ CONTENT = {
             "• no public disclosure of technical keys or settings\n\n"
             "💙 The project is free for users and funded as a volunteer initiative.\n\n"
             "Technical parameters and onboarding steps are not published.\n"
-            "Access is provided after verification."
-        ),
-        "gear": (
+            "Access is provided after verification.\n\n"
             "📦 **Equipment**\n\n"
             "You need a Meshtastic-compatible device (portable node), power, and a client to manage it.\n\n"
             "Required:\n"
@@ -392,8 +387,7 @@ CONTENT = {
             "• external antenna\n"
             "• spare battery/power bank or solar\n"
             "• GPS (if needed)\n\n"
-            "Official list: https://meshtastic.org/docs/hardware/devices/\n"
-            "Technical parameters and onboarding instructions are not published."
+            "Official list: https://meshtastic.org/docs/hardware/devices/"
         ),
         "service": (
             "🛠️ **Product Service**\n\n"
@@ -980,8 +974,7 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
              InlineKeyboardButton("🧩 Продукти", callback_data="info:products")],
             [InlineKeyboardButton("📞 Звʼязок", callback_data="info:contact"),
              InlineKeyboardButton("🛠️ Сервісне обслуговування", callback_data="info:service")],
-            [InlineKeyboardButton("📡 Як працює автономна мережа", callback_data="info:system")],
-            [InlineKeyboardButton("📦 Обладнання", callback_data="info:gear"),
+            [InlineKeyboardButton("📡 Як працює автономна мережа", callback_data="info:system"),
              InlineKeyboardButton("📜 Правила", callback_data="info:rules")],
             [InlineKeyboardButton("💬 Питання та відповіді", callback_data="faq:start")],
             [InlineKeyboardButton("🚨 Сповіщення про тривогу", callback_data="alerts:menu")],
@@ -993,8 +986,7 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🧩 Products", callback_data="info:products")],
         [InlineKeyboardButton("📞 Contact", callback_data="info:contact"),
          InlineKeyboardButton("🛠️ Product service", callback_data="info:service")],
-        [InlineKeyboardButton("📡 How the autonomous network works", callback_data="info:system")],
-        [InlineKeyboardButton("📦 Equipment", callback_data="info:gear"),
+        [InlineKeyboardButton("📡 How the autonomous network works", callback_data="info:system"),
          InlineKeyboardButton("📜 Rules", callback_data="info:rules")],
         [InlineKeyboardButton("💬 Questions & Answers", callback_data="faq:start")],
         [InlineKeyboardButton("🚨 Air Alert Notifications", callback_data="alerts:menu")],
@@ -2141,16 +2133,6 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=menu_only_kb(uid),
         )
         return
-    if data == "info:gear":
-        await send_with_cleanup(
-            context.bot,
-            q.message.chat_id,
-            q.message.reply_text,
-            C(uid, "gear"),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=menu_only_kb(uid),
-        )
-        return
     if data == "info:rules":
         await send_with_cleanup(
             context.bot,
@@ -2928,7 +2910,7 @@ def main():
     # menu/info callbacks only
     app.add_handler(CallbackQueryHandler(
         menu_cb,
-        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:contact|info:service|info:products|products:menu|info:system|info:gear|info:rules)$"
+        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:contact|info:service|info:products|products:menu|info:system|info:rules)$"
     ))
 
     app.add_handler(CallbackQueryHandler(alerts_cb, pattern=r"^alerts:"))
