@@ -2402,6 +2402,93 @@ def _news_body_text(title: str, summary: str, link: str) -> str:
     body += f"\n\n🔗 Джерело: {link}"
     return body
 
+def _clip_to_len(text: str, max_len: int) -> str:
+    text = (text or "").strip()
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return text[:max_len]
+    return text[:max_len - 1].rstrip() + "…"
+
+def _news_full_text(
+    title: str,
+    summary: str,
+    link: str,
+    bullets: str,
+    urgent: bool,
+    max_len: Optional[int] = None,
+) -> str:
+    prefix = "🚨 ТЕРМІНОВО" if urgent else "📰 Новини"
+    title = (title or "").strip()
+    summary_clean = _clean_html(summary or "")
+    if not summary_clean:
+        summary_clean = "Немає короткого опису у джерелі."
+
+    bullets_text = _normalize_bullets(bullets)
+    if not bullets_text:
+        bullets_text = _fallback_bullets(summary)
+    bullet_lines = [l for l in bullets_text.splitlines() if l.strip()]
+
+    link_text = normalize_link(link) or (link or "")
+
+    if max_len:
+        title = clip(title, 160)
+        bullet_lines = [_clip_to_len(l, 140) for l in bullet_lines[:4]]
+        link_text = _clip_to_len(link_text, 220)
+    else:
+        bullet_lines = bullet_lines[:5]
+
+    lines_before = [
+        prefix,
+        f"🧭 Тема: {title}",
+        "",
+        "Тези:",
+    ] + bullet_lines + [
+        "",
+        "🗞️ Деталі:",
+    ]
+    lines_after = [
+        "",
+        f"🔗 Джерело: {link_text}",
+    ]
+
+    if not max_len:
+        summary_line = clip(summary_clean, 1200)
+        return "\n".join(lines_before + [summary_line] + lines_after)
+
+    def base_len() -> int:
+        return len("\n".join(lines_before + [""] + lines_after))
+
+    while bullet_lines and base_len() > max_len:
+        bullet_lines.pop()
+        lines_before = [
+            prefix,
+            f"🧭 Тема: {title}",
+            "",
+            "Тези:",
+        ] + bullet_lines + [
+            "",
+            "🗞️ Деталі:",
+        ]
+
+    if base_len() > max_len:
+        title = _clip_to_len(title, 80)
+        lines_before = [
+            prefix,
+            f"🧭 Тема: {title}",
+            "",
+            "Тези:",
+        ] + bullet_lines + [
+            "",
+            "🗞️ Деталі:",
+        ]
+
+    available = max_len - base_len()
+    summary_line = _clip_to_len(summary_clean, available)
+    return "\n".join(lines_before + [summary_line] + lines_after)
+
 async def _publish_news_entry(
     context: ContextTypes.DEFAULT_TYPE,
     title: str,
@@ -2412,26 +2499,26 @@ async def _publish_news_entry(
     bullets = _normalize_bullets(await ai_news_bullets(title, summary))
     if not bullets:
         bullets = _fallback_bullets(summary)
-    header = _news_header_text(title, bullets, urgent)
-    body = _news_body_text(title, summary, link)
 
     try:
-        await context.bot.send_message(
-            chat_id=NEWS_CHANNEL_ID,
-            text=header,
-            disable_web_page_preview=True,
-        )
         image_bytes = await _generate_news_image(title, summary)
         if image_bytes:
+            footer = _footer_text(NEWS_CHANNEL_ID)
+            max_body = 1024 - len(footer) if footer else 1024
+            text = _news_full_text(title, summary, link, bullets, urgent, max_len=max_body)
+            caption = _caption_with_footer(text, NEWS_CHANNEL_ID, max_len=1024)
             await context.bot.send_photo(
                 chat_id=NEWS_CHANNEL_ID,
                 photo=InputFile(io.BytesIO(image_bytes), filename="news.png"),
+                caption=caption,
             )
-        await context.bot.send_message(
-            chat_id=NEWS_CHANNEL_ID,
-            text=_append_footer(body, NEWS_CHANNEL_ID),
-            disable_web_page_preview=True,
-        )
+        else:
+            text = _news_full_text(title, summary, link, bullets, urgent)
+            await context.bot.send_message(
+                chat_id=NEWS_CHANNEL_ID,
+                text=_append_footer(text, NEWS_CHANNEL_ID),
+                disable_web_page_preview=True,
+            )
         logger.info("News post delivered: urgent=%s title=%s link=%s", urgent, clip(title, 120), link)
     except Exception:
         logger.exception("News post failed: %s", link)
