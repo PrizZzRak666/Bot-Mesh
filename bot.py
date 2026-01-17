@@ -111,6 +111,13 @@ def ai_enabled() -> bool:
 def ai_configured() -> bool:
     return _ai_client is not None
 
+def _ai_status_reason() -> str:
+    if _ai_client is None:
+        return "not configured"
+    if time.time() < _ai_disabled_until:
+        return "temporarily disabled"
+    return ""
+
 def _ai_should_backoff(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "insufficient_quota" in msg or "quota" in msg or "429" in msg
@@ -157,7 +164,7 @@ def ai_instructions(user_id: int, mode: str) -> str:
 
 async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
     if not ai_enabled():
-        logger.warning("AI request ignored: client not configured")
+        logger.warning("AI request ignored: %s", _ai_status_reason())
         return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
     try:
         safe_text = (text or "").strip()[:AI_INPUT_MAX_CHARS]
@@ -1879,6 +1886,7 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 async def ai_contact_triage(user_id: int, question: str) -> Optional[Dict[str, object]]:
     if not ai_enabled():
+        logger.debug("Contact AI triage skipped: %s", _ai_status_reason())
         return None
     lang = get_lang(user_id)
     instructions = (
@@ -1946,6 +1954,7 @@ def _to_int(value) -> Optional[int]:
 
 async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
     if not ai_enabled():
+        logger.debug("News AI scoring skipped: %s", _ai_status_reason())
         return None
     safe_title = (title or "").strip()[:300]
     safe_summary = (summary or "").strip()[:NEWS_SUMMARY_MAX_CHARS]
@@ -1993,6 +2002,7 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
 
 async def ai_news_bullets(title: str, summary: str) -> str:
     if not ai_enabled():
+        logger.debug("News AI bullets skipped: %s", _ai_status_reason())
         return ""
     safe_title = (title or "").strip()[:300]
     safe_summary = (summary or "").strip()[:NEWS_SUMMARY_MAX_CHARS]
@@ -2149,6 +2159,7 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
         logger.info("News image skipped: %s", reason)
         return None
     prompt = _news_image_prompt(title, summary)
+    logger.debug("News image request: model=%s size=%s prompt_len=%s", NEWS_IMAGE_MODEL, NEWS_IMAGE_SIZE, len(prompt))
     try:
         resp = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2209,6 +2220,7 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
         return None
     headlines = [str(it.get("title") or "") for it in items[:8]]
     prompt = _summary_image_prompt(headlines, ai_text)
+    logger.debug("Summary image request: model=%s size=%s prompt_len=%s", NEWS_IMAGE_MODEL, NEWS_IMAGE_SIZE, len(prompt))
     try:
         resp = await asyncio.wait_for(
             asyncio.to_thread(
@@ -2420,36 +2432,68 @@ async def _publish_news_entry(
             text=_append_footer(body, NEWS_CHANNEL_ID),
             disable_web_page_preview=True,
         )
+        logger.info("News post delivered: urgent=%s title=%s link=%s", urgent, clip(title, 120), link)
     except Exception:
         logger.exception("News post failed: %s", link)
         raise
 
 async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
+        logger.info("News job skipped: config not OK")
         return
     if not RSS_FEEDS or not NEWS_CHANNEL_ID:
+        logger.info("News job skipped: RSS_FEEDS or NEWS_CHANNEL_ID empty")
         return
 
     urgent_items: List[Dict[str, object]] = []
     candidates: List[Dict[str, object]] = []
     run_seen_links: Set[str] = set()
     run_seen_titles: Set[str] = set()
+    stats = {
+        "feeds_ok": 0,
+        "entries": 0,
+        "skipped_no_link": 0,
+        "skipped_seen_link": 0,
+        "skipped_run_link": 0,
+        "skipped_no_title": 0,
+        "skipped_seen_title": 0,
+        "skipped_run_title": 0,
+        "skipped_old": 0,
+        "urgent": 0,
+        "candidate": 0,
+    }
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             try:
                 feed_text = await fetch_feed_text(client, feed_url)
                 feed = feedparser.parse(feed_text)
+                stats["feeds_ok"] += 1
                 for entry in (feed.entries or [])[:20]:
+                    stats["entries"] += 1
                     title = getattr(entry, "title", "") or ""
                     link = getattr(entry, "link", "") or ""
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
                     title_norm = normalize_title(title)
                     link_key = normalize_link(link)
 
-                    if not link_key or link_key in _seen_links or link_key in run_seen_links:
+                    if not link_key:
+                        stats["skipped_no_link"] += 1
                         continue
-                    if not title_norm or title_norm in _seen_titles or title_norm in run_seen_titles:
+                    if link_key in _seen_links:
+                        stats["skipped_seen_link"] += 1
+                        continue
+                    if link_key in run_seen_links:
+                        stats["skipped_run_link"] += 1
+                        continue
+                    if not title_norm:
+                        stats["skipped_no_title"] += 1
+                        continue
+                    if title_norm in _seen_titles:
+                        stats["skipped_seen_title"] += 1
+                        continue
+                    if title_norm in run_seen_titles:
+                        stats["skipped_run_title"] += 1
                         continue
 
                     published = _entry_datetime(entry)
@@ -2468,15 +2512,35 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
                     if _blast_hits(text):
                         urgent_items.append(item)
+                        stats["urgent"] += 1
                     else:
                         if NEWS_MAX_AGE_HOURS > 0 and age_hours > NEWS_MAX_AGE_HOURS:
+                            stats["skipped_old"] += 1
                             continue
                         candidates.append(item)
+                        stats["candidate"] += 1
                     run_seen_links.add(link_key)
                     run_seen_titles.add(title_norm)
             except Exception:
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
+    logger.info(
+        "News poll stats: feeds=%s ok=%s entries=%s urgent=%s candidates=%s "
+        "skipped_no_link=%s skipped_no_title=%s skipped_seen_link=%s skipped_seen_title=%s "
+        "skipped_run_link=%s skipped_run_title=%s skipped_old=%s",
+        len(RSS_FEEDS),
+        stats["feeds_ok"],
+        stats["entries"],
+        stats["urgent"],
+        stats["candidate"],
+        stats["skipped_no_link"],
+        stats["skipped_no_title"],
+        stats["skipped_seen_link"],
+        stats["skipped_seen_title"],
+        stats["skipped_run_link"],
+        stats["skipped_run_title"],
+        stats["skipped_old"],
+    )
 
     # publish urgent blast news immediately (no hourly limit)
     urgent_items.sort(
@@ -2634,6 +2698,7 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
 
 async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
     if not ai_enabled():
+        logger.debug("News AI summary skipped: %s", _ai_status_reason())
         return ""
     lines: List[str] = []
     for idx, item in enumerate(items, 1):
@@ -2699,6 +2764,7 @@ async def _build_news_summary_text() -> tuple[str, List[str], str, List[Dict[str
 async def _post_news_summary(context: ContextTypes.DEFAULT_TYPE) -> bool:
     text, links, ai_text, items = await _build_news_summary_text()
     if not text:
+        logger.info("News summary skipped: no items")
         return False
     delivered = False
     image_bytes = await _generate_summary_image(items, ai_text)
@@ -2720,6 +2786,8 @@ async def _post_news_summary(context: ContextTypes.DEFAULT_TYPE) -> bool:
             logger.exception("Summary post failed")
     if delivered and links:
         _mark_summary_links(links)
+    if delivered:
+        logger.info("News summary delivered: items=%s image=%s", len(items), bool(image_bytes))
     return delivered
 
 async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
