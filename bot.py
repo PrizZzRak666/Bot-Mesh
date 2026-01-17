@@ -1676,6 +1676,15 @@ NEWS_IMAGE_TIMEOUT_SEC = env_int("NEWS_IMAGE_TIMEOUT_SEC", 20)
 NEWS_IMAGE_TEMP_DISABLE_SEC = env_int("NEWS_IMAGE_TEMP_DISABLE_SEC", 900)
 _news_images_disabled_until = 0.0
 
+def _news_image_skip_reason() -> str:
+    if not NEWS_IMAGE_ENABLED:
+        return "NEWS_IMAGE_ENABLED=false"
+    if time.time() < _news_images_disabled_until:
+        return "temporarily disabled"
+    if not ai_enabled():
+        return "AI unavailable"
+    return ""
+
 def _keyword_fallback_enabled() -> bool:
     return bool(URGENT_KEYWORDS) and (NEWS_USE_KEYWORDS or NEWS_FALLBACK_KEYWORDS)
 
@@ -1696,11 +1705,7 @@ def _is_permission_denied(exc: Exception) -> bool:
     return "organization must be verified" in msg or "permission denied" in msg
 
 def news_images_enabled() -> bool:
-    if not NEWS_IMAGE_ENABLED:
-        return False
-    if time.time() < _news_images_disabled_until:
-        return False
-    return ai_enabled()
+    return _news_image_skip_reason() == ""
 
 def remember_link(link: str):
     link_key = normalize_link(link)
@@ -2139,7 +2144,9 @@ def _caption_with_footer(text: str, chat_id: object = None, max_len: int = 1024)
     return body + footer
 
 async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
-    if not news_images_enabled():
+    reason = _news_image_skip_reason()
+    if reason:
+        logger.info("News image skipped: %s", reason)
         return None
     prompt = _news_image_prompt(title, summary)
     try:
@@ -2154,6 +2161,7 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
         )
         data = getattr(resp, "data", None) or []
         if not data:
+            logger.warning("News image generation returned empty data")
             return None
         item = data[0]
         b64 = getattr(item, "b64_json", None)
@@ -2165,6 +2173,7 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
                 r = await client.get(url)
                 if r.status_code < 400:
                     return r.content
+                logger.warning("News image download failed: %s", r.status_code)
         return None
     except asyncio.TimeoutError:
         logger.warning("News image generation timed out")
@@ -2194,7 +2203,9 @@ def _summary_image_prompt(headlines: List[str], ai_text: str) -> str:
     return f"{base}\n\nHEADLINES:\n{bullets}"
 
 async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) -> Optional[bytes]:
-    if not news_images_enabled():
+    reason = _news_image_skip_reason()
+    if reason:
+        logger.info("Summary image skipped: %s", reason)
         return None
     headlines = [str(it.get("title") or "") for it in items[:8]]
     prompt = _summary_image_prompt(headlines, ai_text)
@@ -2210,6 +2221,7 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
         )
         data = getattr(resp, "data", None) or []
         if not data:
+            logger.warning("Summary image generation returned empty data")
             return None
         item = data[0]
         b64 = getattr(item, "b64_json", None)
@@ -2221,6 +2233,7 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
                 r = await client.get(url)
                 if r.status_code < 400:
                     return r.content
+                logger.warning("Summary image download failed: %s", r.status_code)
         return None
     except asyncio.TimeoutError:
         logger.warning("Summary image generation timed out")
@@ -2815,6 +2828,106 @@ async def test_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_chat.id,
             update.message.reply_text,
             f"❌ {e}",
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def news_image_test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_CHANNEL_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "NEWS_CHANNEL_ID не задан.", "NEWS_CHANNEL_ID is not set."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    mode = (context.args[0] if context.args else "news").strip().lower()
+    if mode not in ("news", "summary"):
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Використання: /news_image_test [news|summary]", "Usage: /news_image_test [news|summary]"),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    reason = _news_image_skip_reason()
+    if reason:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, f"⚠️ Картинки вимкнені: {reason}.", f"⚠️ Images are disabled: {reason}."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Генерую тестову картинку...", "⏳ Generating test image..."),
+    )
+    try:
+        if mode == "summary":
+            items = [
+                {"title": "Тестова добірка: ситуація на фронті"},
+                {"title": "Тестова добірка: дипломатичні заяви"},
+                {"title": "Тестова добірка: інфраструктура та енергетика"},
+            ]
+            ai_text = "Ключові тези:\n• Тестові пункти зведення\nКоротка аналітика:\nТестова аналітика."
+            image_bytes = await _generate_summary_image(items, ai_text)
+            caption = "🧪 TEST: Зведення новин України"
+            filename = "summary_test.png"
+        else:
+            title = "Тестова новина: перевірка генерації зображень"
+            summary = "Це тест для перевірки, що генерація картинок працює."
+            image_bytes = await _generate_news_image(title, summary)
+            caption = "🧪 TEST: Новинне зображення"
+            filename = "news_test.png"
+        if not image_bytes:
+            reason = _news_image_skip_reason()
+            msg = (
+                t(uid, "❌ Картинку не згенеровано.", "❌ Image was not generated.")
+                if not reason
+                else t(uid, f"⚠️ Картинки вимкнені: {reason}.", f"⚠️ Images are disabled: {reason}.")
+            )
+            await send_with_cleanup(
+                context.bot,
+                update.effective_chat.id,
+                update.message.reply_text,
+                msg,
+                reply_markup=menu_only_kb(uid),
+            )
+            return
+        await context.bot.send_photo(
+            chat_id=NEWS_CHANNEL_ID,
+            photo=InputFile(io.BytesIO(image_bytes), filename=filename),
+            caption=caption,
+        )
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "✅ Тестову картинку відправлено в канал.", "✅ Test image sent to channel."),
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("News image test failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час генерації.", "❌ Failed to generate image."),
             reply_markup=menu_only_kb(uid),
         )
 
@@ -3948,6 +4061,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("health", health_cmd))
     app.add_handler(CommandHandler("test_channel", test_channel_cmd))
+    app.add_handler(CommandHandler("news_image_test", news_image_test_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
