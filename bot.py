@@ -60,6 +60,12 @@ def env_int(name: str, default: int) -> int:
     except Exception:
         return default
 
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(env(name, str(default)))
+    except Exception:
+        return default
+
 LOG_LEVEL = env("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("bot")
@@ -1645,6 +1651,15 @@ NEWS_MAX_AGE_HOURS = env_int("NEWS_MAX_AGE_HOURS", 24)
 NEWS_INTEREST_KEYWORDS = [k.strip() for k in env("NEWS_INTEREST_KEYWORDS", "").split(",") if k.strip()]
 NEWS_INTEREST_BOOST = env_int("NEWS_INTEREST_BOOST", 2)
 NEWS_RECENCY_BOOST = env_int("NEWS_RECENCY_BOOST", 6)
+NEWS_TITLE_SIM_THRESHOLD = env_float("NEWS_TITLE_SIM_THRESHOLD", 0.82)
+NEWS_TITLE_SIM_MIN_TOKENS = env_int("NEWS_TITLE_SIM_MIN_TOKENS", 4)
+NEWS_DEPRIORITY_KEYWORDS = [
+    k.strip() for k in env(
+        "NEWS_DEPRIORITY_KEYWORDS",
+        "відео,відеорепортаж,відеоогляд,фото,фоторепортаж,галерея,стрім,онлайн,live,stream,video,photo,infographic"
+    ).split(",") if k.strip()
+]
+NEWS_DEPRIORITY_PENALTY = env_int("NEWS_DEPRIORITY_PENALTY", 4)
 NEWS_BLAST_KEYWORDS = [k.strip() for k in env("NEWS_BLAST_KEYWORDS", "вибух,вибухи").split(",") if k.strip()]
 NEWS_BLAST_CONTEXT_KEYWORDS = [
     k.strip() for k in env(
@@ -1730,6 +1745,45 @@ def remember_link(link: str):
 def normalize_title(title: str) -> str:
     text = re.sub(r"[^\w]+", " ", (title or "").lower())
     return " ".join(text.split())
+
+_TITLE_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "into", "over", "after",
+    "про", "для", "між", "під", "перед", "через", "щодо", "які", "який", "яка",
+    "та", "і", "й", "але", "що", "це", "на", "у", "з", "до", "від", "без", "по",
+    "про", "над", "при", "або", "чи", "за", "як", "не", "є",
+    "по", "из", "об", "на", "в", "с", "у", "за", "без", "для", "про", "над",
+    "при", "или", "что", "это", "как", "не", "есть",
+}
+
+def _title_tokens(text: str) -> Set[str]:
+    if not text:
+        return set()
+    tokens = re.findall(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", text.lower())
+    out: Set[str] = set()
+    for tok in tokens:
+        if tok in _TITLE_STOPWORDS:
+            continue
+        if len(tok) < 3 and not tok.isdigit():
+            continue
+        out.add(tok)
+    return out
+
+def _title_similarity(a: Set[str], b: Set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = a.intersection(b)
+    union = a.union(b)
+    return len(inter) / max(1, len(union))
+
+def _is_similar_title(tokens: Set[str], seen_tokens: List[Set[str]]) -> bool:
+    if NEWS_TITLE_SIM_THRESHOLD <= 0 or len(tokens) < max(1, NEWS_TITLE_SIM_MIN_TOKENS):
+        return False
+    for prev in seen_tokens:
+        if len(prev) < max(1, NEWS_TITLE_SIM_MIN_TOKENS):
+            continue
+        if _title_similarity(tokens, prev) >= NEWS_TITLE_SIM_THRESHOLD:
+            return True
+    return False
 
 _TRACKING_QUERY_KEYS = {
     "utm_source",
@@ -1841,6 +1895,16 @@ def _interest_hits(text: str) -> int:
         for kw in URGENT_KEYWORDS:
             if kw.lower() in text:
                 hits += 1
+    return hits
+
+def _deprioritize_hits(text: str) -> int:
+    text = (text or "").lower()
+    if not text or not NEWS_DEPRIORITY_KEYWORDS:
+        return 0
+    hits = 0
+    for kw in NEWS_DEPRIORITY_KEYWORDS:
+        if kw.lower() in text:
+            hits += 1
     return hits
 
 def _text_has_any(text: str, keywords: List[str]) -> bool:
@@ -2536,6 +2600,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     candidates: List[Dict[str, object]] = []
     run_seen_links: Set[str] = set()
     run_seen_titles: Set[str] = set()
+    run_seen_title_tokens: List[Set[str]] = []
     stats = {
         "feeds_ok": 0,
         "entries": 0,
@@ -2545,6 +2610,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         "skipped_no_title": 0,
         "skipped_seen_title": 0,
         "skipped_run_title": 0,
+        "skipped_similar_title": 0,
         "skipped_old": 0,
         "urgent": 0,
         "candidate": 0,
@@ -2563,6 +2629,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
                     title_norm = normalize_title(title)
                     link_key = normalize_link(link)
+                    title_tokens = _title_tokens(title)
 
                     if not link_key:
                         stats["skipped_no_link"] += 1
@@ -2582,11 +2649,16 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     if title_norm in run_seen_titles:
                         stats["skipped_run_title"] += 1
                         continue
+                    if _is_similar_title(title_tokens, run_seen_title_tokens):
+                        stats["skipped_similar_title"] += 1
+                        logger.debug("Skip similar title: %s", clip(title, 120))
+                        continue
 
                     published = _entry_datetime(entry)
                     age_hours = _news_age_hours(published)
 
                     text = f"{title}\n{summary}"
+                    deprior_hits = _deprioritize_hits(text)
                     item = {
                         "title": title,
                         "link": link,
@@ -2595,6 +2667,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         "published": published,
                         "age_hours": age_hours,
                         "text": text,
+                        "deprior_hits": deprior_hits,
                     }
 
                     if _blast_hits(text):
@@ -2608,13 +2681,15 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         stats["candidate"] += 1
                     run_seen_links.add(link_key)
                     run_seen_titles.add(title_norm)
+                    if title_tokens:
+                        run_seen_title_tokens.append(title_tokens)
             except Exception:
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
     logger.info(
         "News poll stats: feeds=%s ok=%s entries=%s urgent=%s candidates=%s "
         "skipped_no_link=%s skipped_no_title=%s skipped_seen_link=%s skipped_seen_title=%s "
-        "skipped_run_link=%s skipped_run_title=%s skipped_old=%s",
+        "skipped_run_link=%s skipped_run_title=%s skipped_similar_title=%s skipped_old=%s",
         len(RSS_FEEDS),
         stats["feeds_ok"],
         stats["entries"],
@@ -2626,6 +2701,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         stats["skipped_seen_title"],
         stats["skipped_run_link"],
         stats["skipped_run_title"],
+        stats["skipped_similar_title"],
         stats["skipped_old"],
     )
 
@@ -2667,11 +2743,13 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     continue
             interest_hits = _interest_hits(item["text"])
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
+            deprior_hits = item.get("deprior_hits", 0) or 0
             score = (
                 (ai_scores["importance"] if ai_scores else 0) * 2 +
                 (ai_scores["criticality"] if ai_scores else 0) * 2 +
                 interest_hits * NEWS_INTEREST_BOOST +
-                recency
+                recency -
+                deprior_hits * NEWS_DEPRIORITY_PENALTY
             )
             scored.append((score, item, ai_scores or {"criticality": 0, "importance": 0}))
 
@@ -2708,6 +2786,9 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         if urgent_by_keywords(item["title"], item["summary"]):
             hits = keyword_hits(item["title"]) + keyword_hits(item["summary"])
             item["keyword_hits"] = hits
+            deprior_hits = item.get("deprior_hits", 0) or 0
+            recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
+            item["score"] = hits * 10 + recency - deprior_hits * NEWS_DEPRIORITY_PENALTY
             keyword_items.append(item)
 
     if not keyword_items:
@@ -2715,7 +2796,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
     keyword_items.sort(
         key=lambda x: (
-            x.get("keyword_hits", 0),
+            x.get("score", 0),
             x.get("published") or datetime.min.replace(tzinfo=timezone.utc),
         ),
         reverse=True,
