@@ -99,6 +99,9 @@ def ai_enabled() -> bool:
         return False
     return time.time() >= _ai_disabled_until
 
+def ai_configured() -> bool:
+    return _ai_client is not None
+
 def _ai_should_backoff(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "insufficient_quota" in msg or "quota" in msg or "429" in msg
@@ -183,12 +186,22 @@ CONTENT = {
             "та встановлюють нові стандарти в індустрії.\n\n"
             "Контакти:\n"
             "• Email: ukrainskiaviacijni@gmail.com\n"
-            "• Телефон (Telegram): 0 755 05 35 18\n"
             "• Графік: пн-пт 9:00-18:00\n"
             "• Сайт: https://www.ukrainianaviation.com\n"
             "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
             "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
             "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech"
+        ),
+        "contact": (
+            "📞 **Звʼязок**\n\n"
+            "Напишіть нам зручним способом:\n"
+            "• Email: ukrainskiaviacijni@gmail.com\n"
+            "• Сайт: https://www.ukrainianaviation.com\n"
+            "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
+            "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
+            "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech\n\n"
+            "Графік: пн-пт 9:00-18:00\n\n"
+            "Або натисніть кнопку нижче, щоб залишити запит."
         ),
         "products": (
             "🧩 **Каталог продуктів**\n\n"
@@ -197,13 +210,20 @@ CONTENT = {
         ),
         "products_not_found": "⚠️ Продукт не знайдено.",
         "system": (
-            "📡 **Як працює система (Meshtastic)**\n\n"
-            "Це автономна mesh-мережа на портативних вузлах, де кожен вузол може ретранслювати повідомлення далі.\n"
-            "Система працює без інтернету й мобільного звʼязку, з низьким енергоспоживанням та короткими повідомленнями.\n\n"
-            "Навіщо потрібна:\n"
-            "• резервний звʼязок під час відключень і перевантажень мереж\n"
-            "• координація в польових/кризових умовах\n"
-            "• стійкість до втрати окремих вузлів (мережа самовідновлюється)\n\n"
+            "📡 **Як працює автономна мережа (Meshtastic)**\n\n"
+            "Meshtastic — це відкритий проєкт автономного звʼязку на mesh-мережі портативних вузлів.\n"
+            "Простіше: багато невеликих пристроїв утворюють «ланцюжок», який передає повідомлення далі.\n\n"
+            "Як відбувається обмін:\n"
+            "• користувач пише повідомлення у додатку\n"
+            "• пристрій передає його в мережу\n"
+            "• інші вузли підхоплюють нове повідомлення і ретранслюють далі\n"
+            "• мережа уникає дублювання: повторно почуте повідомлення не пересилається\n"
+            "• є обмеження на кількість «стрибків», щоб повідомлення не ходили по колу\n"
+            "• коли додаток тимчасово недоступний, пристрій тримає невеликий буфер останніх повідомлень\n\n"
+            "Чому це працює під час відключень:\n"
+            "• не потрібен інтернет або мобільна мережа\n"
+            "• кожен вузол може підсилювати покриття\n"
+            "• якщо один вузол зник — маршрут відновлюється через інші\n\n"
             "Безпека:\n"
             "• повідомлення захищені шифруванням\n"
             "• обмін без публікації технічних ключів чи налаштувань\n\n"
@@ -234,6 +254,25 @@ CONTENT = {
             "Офіційний список: https://meshtastic.org/docs/hardware/devices/\n"
             "Технічні параметри та інструкції підключення публічно не розкриваємо."
         ),
+        "service": (
+            "🛠️ **Сервісне обслуговування продуктів**\n\n"
+            "Для звернення щодо сервісу вкажіть:\n"
+            "• модель продукту\n"
+            "• короткий опис проблеми\n"
+            "• бажаний спосіб звʼязку\n\n"
+            "Контакт для звернень: ukrainskiaviacijni@gmail.com\n\n"
+            "Або натисніть кнопку нижче, щоб залишити заявку."
+        ),
+        "contact_form_question": "❓ Яке у вас питання? (1-2 речення)",
+        "contact_form_name": "🧑 Ваше імʼя? (1 рядок)",
+        "contact_form_contact": "📞 Контактний номер / Telegram / Email",
+        "contact_sent": "✅ Запит передано адміністратору. Очікуйте відповідь тут.",
+        "contact_sent_admin_fail": "⚠️ Запит збережено, але не вдалося доставити адміністратору. Спробуйте пізніше.",
+        "service_form_product": "🛠️ Який продукт/модель? (1 рядок)",
+        "service_form_serial": "🔢 Серійний номер?",
+        "service_form_contact": "📞 Контактний номер / Telegram / Email",
+        "service_sent": "✅ Заявку на сервіс передано адміністратору. Очікуйте відповідь тут.",
+        "service_sent_admin_fail": "⚠️ Заявку збережено, але не вдалося доставити адміністратору. Спробуйте пізніше.",
         "rules": (
             "📜 **Правила**\n\n"
             "• Лише екстрені/резервні сценарії\n"
@@ -255,7 +294,9 @@ CONTENT = {
             "Якщо потрібно, додай один рядок контексту.\n"
             "Відповім коротко і без технічних деталей."
         ),
-        "apply_intro": "🟢 **ЗАПИТ НА ДОСТУП**\n\nДля чого вам доступ? (1 рядок)",
+        "apply_intro": "🟢 **ЗАПИТ НА ДОСТУП**\n\nВаше імʼя? (1 рядок)",
+        "ask_contact": "📞 Контакт для зворотного звʼязку (Telegram/телефон/Email)",
+        "ask_purpose": "🎯 Для чого вам доступ? (1 рядок)",
         "ask_device": "📦 Який пристрій? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Підтвердіть правила. Напишіть: **ПІДТВЕРДЖУЮ**",
         "sent": "✅ Заявку передано адміністратору. Очікуйте відповідь тут.",
@@ -286,12 +327,22 @@ CONTENT = {
             "in the industry.\n\n"
             "Contacts:\n"
             "• Email: ukrainskiaviacijni@gmail.com\n"
-            "• Phone (Telegram): 0 755 05 35 18\n"
             "• Hours: Mon-Fri 9:00-18:00\n"
             "• Website: https://www.ukrainianaviation.com\n"
             "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
             "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
             "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech"
+        ),
+        "contact": (
+            "📞 **Contact**\n\n"
+            "Reach us via:\n"
+            "• Email: ukrainskiaviacijni@gmail.com\n"
+            "• Website: https://www.ukrainianaviation.com\n"
+            "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
+            "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
+            "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech\n\n"
+            "Hours: Mon-Fri 9:00-18:00\n\n"
+            "Or use the button below to leave a request."
         ),
         "products": (
             "🧩 **Product catalog**\n\n"
@@ -300,13 +351,20 @@ CONTENT = {
         ),
         "products_not_found": "⚠️ Product not found.",
         "system": (
-            "📡 **How it works (Meshtastic)**\n\n"
-            "An autonomous mesh network of portable nodes where each node can relay messages.\n"
-            "It works without internet or cellular coverage, optimized for low power and short messages.\n\n"
-            "Why it matters:\n"
-            "• backup communications during outages and network congestion\n"
-            "• coordination in field or crisis conditions\n"
-            "• resilient topology that self-heals if some nodes drop\n\n"
+            "📡 **How the autonomous network works (Meshtastic)**\n\n"
+            "Meshtastic is an open-source, off-grid mesh network of portable nodes.\n"
+            "Simply put: many small devices form a chain that forwards messages onward.\n\n"
+            "How messages move:\n"
+            "• a user writes a message in the companion app\n"
+            "• the device sends it into the mesh\n"
+            "• other nodes relay new messages to extend coverage\n"
+            "• duplicates are ignored so the network doesn’t resend the same message\n"
+            "• there is a hop limit to prevent loops\n"
+            "• if the app is temporarily offline, the device keeps a small buffer of recent messages\n\n"
+            "Why it works during outages:\n"
+            "• no internet or cellular network needed\n"
+            "• each node can extend coverage\n"
+            "• if one node drops, routes recover through others\n\n"
             "Security:\n"
             "• messages are protected with encryption\n"
             "• no public disclosure of technical keys or settings\n\n"
@@ -337,6 +395,25 @@ CONTENT = {
             "Official list: https://meshtastic.org/docs/hardware/devices/\n"
             "Technical parameters and onboarding instructions are not published."
         ),
+        "service": (
+            "🛠️ **Product Service**\n\n"
+            "For service requests, include:\n"
+            "• product model\n"
+            "• short description of the issue\n"
+            "• preferred contact method\n\n"
+            "Service contact: ukrainskiaviacijni@gmail.com\n\n"
+            "Or use the button below to submit a request."
+        ),
+        "contact_form_question": "❓ What is your question? (1-2 sentences)",
+        "contact_form_name": "🧑 Your name? (one short line)",
+        "contact_form_contact": "📞 Contact number / Telegram / Email",
+        "contact_sent": "✅ Request sent to admin. Please wait here.",
+        "contact_sent_admin_fail": "⚠️ Request saved, but could not be delivered to admin. Please try later.",
+        "service_form_product": "🛠️ Which product/model? (one short line)",
+        "service_form_serial": "🔢 Serial number?",
+        "service_form_contact": "📞 Contact number / Telegram / Email",
+        "service_sent": "✅ Service request sent to admin. Please wait here.",
+        "service_sent_admin_fail": "⚠️ Request saved, but could not be delivered to admin. Please try later.",
         "rules": (
             "📜 **Rules**\n\n"
             "• Emergency/reserve scenarios only\n"
@@ -358,7 +435,9 @@ CONTENT = {
             "If needed, add one short line of context.\n"
             "I’ll answer briefly and without technical details."
         ),
-        "apply_intro": "🟢 **ACCESS REQUEST**\n\nPurpose? (one short line)",
+        "apply_intro": "🟢 **ACCESS REQUEST**\n\nYour name? (one short line)",
+        "ask_contact": "📞 Contact for follow-up (Telegram/phone/email)",
+        "ask_purpose": "🎯 Purpose? (one short line)",
         "ask_device": "📦 Which device? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Confirm rules. Type: **CONFIRM**",
         "sent": "✅ Request sent to admin. Please wait here.",
@@ -896,28 +975,49 @@ def lang_kb() -> InlineKeyboardMarkup:
 def menu_kb(user_id: int) -> InlineKeyboardMarkup:
     if get_lang(user_id) == "uk":
         return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🟢 Запит на доступ", callback_data="apply:start")],
+            [InlineKeyboardButton("🟢 Запит на доступ до автономної мережі звʼязку", callback_data="apply:start")],
             [InlineKeyboardButton("🏢 Про компанію", callback_data="info:company"),
              InlineKeyboardButton("🧩 Продукти", callback_data="info:products")],
-            [InlineKeyboardButton("📡 Як працює", callback_data="info:system")],
+            [InlineKeyboardButton("📞 Звʼязок", callback_data="info:contact"),
+             InlineKeyboardButton("🛠️ Сервісне обслуговування", callback_data="info:service")],
+            [InlineKeyboardButton("📡 Як працює автономна мережа", callback_data="info:system")],
             [InlineKeyboardButton("📦 Обладнання", callback_data="info:gear"),
              InlineKeyboardButton("📜 Правила", callback_data="info:rules")],
             [InlineKeyboardButton("💬 Питання та відповіді", callback_data="faq:start")],
             [InlineKeyboardButton("🚨 Сповіщення про тривогу", callback_data="alerts:menu")],
-            [InlineKeyboardButton("📰 Новини → канал (тест)", callback_data="news:test")],
             [InlineKeyboardButton("🌐 Мова / Language", callback_data="lang:menu")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Access request", callback_data="apply:start")],
+        [InlineKeyboardButton("🟢 Access to autonomous comms network", callback_data="apply:start")],
         [InlineKeyboardButton("🏢 Company", callback_data="info:company"),
          InlineKeyboardButton("🧩 Products", callback_data="info:products")],
-        [InlineKeyboardButton("📡 How it works", callback_data="info:system")],
+        [InlineKeyboardButton("📞 Contact", callback_data="info:contact"),
+         InlineKeyboardButton("🛠️ Product service", callback_data="info:service")],
+        [InlineKeyboardButton("📡 How the autonomous network works", callback_data="info:system")],
         [InlineKeyboardButton("📦 Equipment", callback_data="info:gear"),
          InlineKeyboardButton("📜 Rules", callback_data="info:rules")],
         [InlineKeyboardButton("💬 Questions & Answers", callback_data="faq:start")],
         [InlineKeyboardButton("🚨 Air Alert Notifications", callback_data="alerts:menu")],
-        [InlineKeyboardButton("📰 News → channel (test)", callback_data="news:test")],
         [InlineKeyboardButton("🌐 Language", callback_data="lang:menu")],
+    ])
+
+def menu_only_kb(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(user_id, "🏠 Меню", "🏠 Menu"), callback_data="menu:back")],
+    ])
+
+def contact_kb(user_id: int) -> InlineKeyboardMarkup:
+    label = t(user_id, "📝 Контактна форма", "📝 Contact form")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="contact:form")],
+        [InlineKeyboardButton(t(user_id, "🏠 Меню", "🏠 Menu"), callback_data="menu:back")],
+    ])
+
+def service_kb(user_id: int) -> InlineKeyboardMarkup:
+    label = t(user_id, "📝 Сервісна заявка", "📝 Service request")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="service:form")],
+        [InlineKeyboardButton(t(user_id, "🏠 Меню", "🏠 Menu"), callback_data="menu:back")],
     ])
 
 def admin_kb(key: str) -> InlineKeyboardMarkup:
@@ -943,6 +1043,8 @@ class AccessRequest:
     user_id: int
     chat_id: int
     who: str
+    name: str
+    contact: str
     purpose: str
     device: str
     ts: float
@@ -957,6 +1059,35 @@ def clip(s: str, n: int = 300) -> str:
     if len(s) <= n:
         return s
     return s[:n] + "…"
+
+# =========================
+# Message cleanup (private chats only)
+# =========================
+LAST_BOT_MESSAGE_ID: Dict[int, int] = {}
+
+def _is_private_chat_id(chat_id: object) -> bool:
+    return isinstance(chat_id, int) and chat_id > 0
+
+async def cleanup_after_send(bot, chat_id: object, message) -> None:
+    if not _is_private_chat_id(chat_id):
+        return
+    if chat_id == ADMIN_ID:
+        return
+    msg_id = getattr(message, "message_id", None)
+    if not msg_id:
+        return
+    prev_id = LAST_BOT_MESSAGE_ID.get(chat_id)
+    if prev_id and prev_id != msg_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_id)
+        except Exception:
+            pass
+    LAST_BOT_MESSAGE_ID[chat_id] = msg_id
+
+async def send_with_cleanup(bot, cleanup_chat_id: object, send_callable, *args, **kwargs):
+    msg = await send_callable(*args, **kwargs)
+    await cleanup_after_send(bot, cleanup_chat_id, msg)
+    return msg
 
 # =========================
 # Alerts (official) – configurable via env
@@ -1415,7 +1546,14 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
             msg_uk = "🔴 ТРИВОГА" if is_alert else "🟢 ВІДБІЙ"
             msg_en = "🔴 ALERT" if is_alert else "🟢 ALL CLEAR"
             try:
-                await context.bot.send_message(chat_id=uid, text=t(uid, msg_uk, msg_en))
+                await send_with_cleanup(
+                    context.bot,
+                    uid,
+                    context.bot.send_message,
+                    chat_id=uid,
+                    text=t(uid, msg_uk, msg_en),
+                    reply_markup=menu_only_kb(uid),
+                )
             except Exception:
                 pass
 
@@ -1476,6 +1614,8 @@ def news_config_ok() -> bool:
         return False
     if not NEWS_USE_KEYWORDS and not NEWS_AI_FILTER_ENABLED:
         return False
+    if NEWS_AI_FILTER_ENABLED and not NEWS_USE_KEYWORDS and not ai_configured():
+        return False
     return True
 
 def keyword_hits(text: str) -> int:
@@ -1509,6 +1649,55 @@ def _extract_json_object(text: str) -> Optional[dict]:
     try:
         return json.loads(snippet)
     except Exception:
+        return None
+
+async def ai_contact_triage(user_id: int, question: str) -> Optional[Dict[str, object]]:
+    if not ai_enabled():
+        return None
+    lang = get_lang(user_id)
+    instructions = (
+        "You are a support triage assistant.\n"
+        "Decide if you can answer the user's question safely and briefly.\n"
+        "If you cannot answer, set can_answer=false.\n"
+        "Rules:\n"
+        "1) Answer ONLY in Ukrainian or English.\n"
+        "2) NEVER answer in Russian.\n"
+        "3) If the user writes in Russian, answer in Ukrainian.\n"
+        "4) Do NOT reveal technical details (frequencies, keys, QR, configs, onboarding steps).\n"
+        "Return ONLY JSON: {\"can_answer\":true|false,\"answer\":\"...\"}\n"
+        "If can_answer=false, answer must be empty string.\n"
+    )
+    if lang == "en":
+        instructions += "Answer in English."
+    else:
+        instructions += "Відповідай українською."
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.responses.create,
+                model=AI_MODEL,
+                instructions=instructions,
+                input=(question or "").strip()[:AI_INPUT_MAX_CHARS],
+            ),
+            timeout=AI_TIMEOUT_SEC,
+        )
+        raw = (getattr(resp, "output_text", "") or "").strip()
+        data = _extract_json_object(raw)
+        if not isinstance(data, dict):
+            return None
+        can_answer = _coerce_bool(data.get("can_answer"))
+        answer = str(data.get("answer") or "").strip()
+        if can_answer is None:
+            return None
+        if not can_answer:
+            return {"can_answer": False, "answer": ""}
+        if not answer:
+            return None
+        return {"can_answer": True, "answer": answer}
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("Contact AI triage failed")
         return None
 
 def _to_int(value) -> Optional[int]:
@@ -1641,9 +1830,6 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                                     ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
                                 continue
 
-                    remember_link(link)
-                    remember_title(title_norm)
-
                     short = ""
                     if ai_enabled():
                         try:
@@ -1675,7 +1861,13 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                         post += "🤖 Коротко:\n" + short + "\n\n"
                     post += "🔗 Джерело: " + link
 
-                    await post_to_channel(context, post)
+                    try:
+                        await post_to_channel(context, post)
+                    except Exception:
+                        logger.exception("News post failed: %s", link)
+                        continue
+                    remember_link(link)
+                    remember_title(title_norm)
                     mark_news_sent()
                     posted += 1
 
@@ -1686,7 +1878,20 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # Conversation states
 # =========================
-ASK_PURPOSE, ASK_DEVICE, ASK_CONFIRM, ASK_FAQ = range(4)
+(
+    ASK_NAME,
+    ASK_CONTACT,
+    ASK_PURPOSE,
+    ASK_DEVICE,
+    ASK_CONFIRM,
+    ASK_FAQ,
+    CONTACT_QUESTION,
+    CONTACT_NAME,
+    CONTACT_CONTACT,
+    SERVICE_PRODUCT,
+    SERVICE_SERIAL,
+    SERVICE_CONTACT,
+) = range(12)
 
 # =========================
 # Command handlers
@@ -1695,51 +1900,99 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     name = display_name(update.effective_user)
     greet = greeting_text(uid, name)
-    await update.message.reply_text(
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
         f"{greet}\n\n{C(uid,'menu')}",
         reply_markup=menu_kb(uid),
     )
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    await update.message.reply_text(C(uid, "cancel"))
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "cancel"),
+        reply_markup=menu_only_kb(uid),
+    )
     return ConversationHandler.END
 
 async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     txt = (
         f"OK\n"
         f"AI={'on' if ai_enabled() else 'off'}\n"
         f"NEWS={'on' if news_config_ok() else 'off'}\n"
         f"ALERTS={'on' if ua_alarm_enabled() else 'off'}"
     )
-    await update.message.reply_text(txt)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        txt,
+        reply_markup=menu_only_kb(uid),
+    )
 
 async def test_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(t(uid, "⛔ Тільки адмін.", "⛔ Admin only."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
         return
     if not NEWS_CHANNEL_ID:
-        await update.message.reply_text(t(uid, "NEWS_CHANNEL_ID не задан.", "NEWS_CHANNEL_ID is not set."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "NEWS_CHANNEL_ID не задан.", "NEWS_CHANNEL_ID is not set."),
+            reply_markup=menu_only_kb(uid),
+        )
         return
     try:
         await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text="✅ TEST: бот може писати в канал.")
-        await update.message.reply_text(t(uid, "✅ Тестове повідомлення відправлено в канал.", "✅ Test message sent to channel."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "✅ Тестове повідомлення відправлено в канал.", "✅ Test message sent to channel."),
+            reply_markup=menu_only_kb(uid),
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ {e}")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            f"❌ {e}",
+            reply_markup=menu_only_kb(uid),
+        )
 
 async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != ADMIN_ID:
-        await update.message.reply_text(t(uid, "⛔ Тільки адмін.", "⛔ Admin only."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+        )
         return
     query = " ".join(context.args or []).strip().lower()
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             data = await ua_get_json(UA_ALARM_REGIONS_PATH, client=client)
     except Exception:
-        await update.message.reply_text(
-            t(uid, "❌ Не вдалося отримати список регіонів.", "❌ Failed to fetch regions list.")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Не вдалося отримати список регіонів.", "❌ Failed to fetch regions list."),
         )
         return
 
@@ -1758,22 +2011,38 @@ async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(name or rid)
 
     if not lines:
-        await update.message.reply_text(
-            t(uid, "ℹ️ Регіони не знайдені за запитом.", "ℹ️ No regions found for query.")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Регіони не знайдені за запитом.", "ℹ️ No regions found for query."),
         )
         return
 
     prefix = "Регіони:\n" if get_lang(uid) == "uk" else "Regions:\n"
     max_len = 3500
     chunk = prefix
+    chunks: List[str] = []
     for line in lines:
         if len(chunk) + len(line) + 1 > max_len:
-            await update.message.reply_text(chunk)
+            chunks.append(chunk)
             chunk = prefix + line + "\n"
         else:
             chunk += line + "\n"
     if chunk.strip():
-        await update.message.reply_text(chunk)
+        chunks.append(chunk)
+
+    for idx, out in enumerate(chunks):
+        kwargs = {}
+        if idx == len(chunks) - 1:
+            kwargs["reply_markup"] = menu_only_kb(uid)
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            out,
+            **kwargs,
+        )
 
 # =========================
 # Menu callback handler (menu/info/news)
@@ -1785,67 +2054,155 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
 
     if data == "lang:menu":
-        await q.message.reply_text(C(uid, "choose_lang"), reply_markup=lang_kb())
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "choose_lang"),
+            reply_markup=lang_kb(),
+        )
         return
 
     if data.startswith("lang:set:"):
         _, _, lng = data.split(":")
         USER_LANG[uid] = "en" if lng == "en" else "uk"
-        await q.message.reply_text(C(uid, "lang_saved"))
-        await q.message.reply_text(C(uid, "menu"), reply_markup=menu_kb(uid))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "lang_saved"),
+        )
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "menu"),
+            reply_markup=menu_kb(uid),
+        )
         return
 
     if data == "menu:back":
-        await q.message.reply_text(C(uid, "menu"), reply_markup=menu_kb(uid))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "menu"),
+            reply_markup=menu_kb(uid),
+        )
         return
 
     if data == "info:company":
-        await q.message.reply_text(C(uid, "company"), parse_mode=ParseMode.MARKDOWN)
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "company"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if data == "info:contact":
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "contact"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=contact_kb(uid),
+        )
+        return
+    if data == "info:service":
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "service"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=service_kb(uid),
+        )
         return
     if data in ("info:products", "products:menu"):
-        await q.message.reply_text(
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
             C(uid, "products"),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=products_kb(uid),
         )
         return
     if data == "info:system":
-        await q.message.reply_text(C(uid, "system"), parse_mode=ParseMode.MARKDOWN)
-        return
-    if data == "info:gear":
-        await q.message.reply_text(C(uid, "gear"), parse_mode=ParseMode.MARKDOWN)
-        return
-    if data == "info:rules":
-        await q.message.reply_text(C(uid, "rules"), parse_mode=ParseMode.MARKDOWN)
-        return
-
-    if data == "news:test":
-        if not news_config_ok():
-            await q.message.reply_text(C(uid, "news_not_cfg"))
-            return
-        await q.message.reply_text(
-            t(uid, "✅ News job активний. Чекайте публікацій у каналі.", "✅ News job active. Watch the channel.")
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "system"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(uid),
         )
         return
+    if data == "info:gear":
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "gear"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if data == "info:rules":
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "rules"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+
 
 # =========================
 # Alerts callbacks
 # =========================
-async def alerts_show_menu(q, uid: int):
+async def alerts_show_menu(q, uid: int, bot):
     if not ua_alarm_enabled():
-        await q.message.reply_text(C(uid, "alerts_no_key"))
+        await send_with_cleanup(
+            bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "alerts_no_key"),
+        )
         return
     txt = await alerts_status_text(uid)
-    await q.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=alerts_menu_kb(uid))
+    await send_with_cleanup(
+        bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        txt,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=alerts_menu_kb(uid),
+    )
 
-async def alerts_oblast_menu(q, uid: int, page: int = 0):
+async def alerts_oblast_menu(q, uid: int, bot, page: int = 0):
     if not ua_alarm_enabled():
-        await q.message.reply_text(C(uid, "alerts_no_key"))
+        await send_with_cleanup(
+            bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "alerts_no_key"),
+        )
         return
     try:
         await ua_load_regions()
     except Exception:
-        await q.message.reply_text(t(uid, "❌ Не вдалося отримати список областей.", "❌ Failed to fetch oblasts."))
+        await send_with_cleanup(
+            bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            t(uid, "❌ Не вдалося отримати список областей.", "❌ Failed to fetch oblasts."),
+        )
         return
     items = region_items_by_type(uid, "oblast")
     if not items:
@@ -1857,10 +2214,21 @@ async def alerts_oblast_menu(q, uid: int, page: int = 0):
         fallback.sort(key=lambda x: x[1].lower())
         items = fallback
     if not items:
-        await q.message.reply_text(t(uid, "❌ Не знайдено областей.", "❌ No oblasts found."))
+        await send_with_cleanup(
+            bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            t(uid, "❌ Не знайдено областей.", "❌ No oblasts found."),
+        )
         return
     kb = regions_list_kb(uid, items, page, "alerts:oblast", "alerts:menu")
-    await q.message.reply_text(t(uid, "Оберіть область:", "Choose an oblast:"), reply_markup=kb)
+    await send_with_cleanup(
+        bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        t(uid, "Оберіть область:", "Choose an oblast:"),
+        reply_markup=kb,
+    )
 
 async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1869,27 +2237,40 @@ async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
 
     if data == "alerts:menu":
-        await alerts_show_menu(q, uid)
+        await alerts_show_menu(q, uid, context.bot)
         return
 
     if data == "alerts:toggle":
         if not ua_alarm_enabled():
-            await q.message.reply_text(C(uid, "alerts_no_key"))
+            await send_with_cleanup(
+                context.bot,
+                q.message.chat_id,
+                q.message.reply_text,
+                C(uid, "alerts_no_key"),
+            )
             return
         on = ALERTS_ENABLED.get(uid, False)
         if on:
             ALERTS_ENABLED[uid] = False
             ALERT_LAST_USER_STATE.pop(uid, None)
-            await q.message.reply_text(t(uid, "✅ Сповіщення вимкнено.", "✅ Alerts disabled."))
-            await alerts_show_menu(q, uid)
+            await send_with_cleanup(
+                context.bot,
+                q.message.chat_id,
+                q.message.reply_text,
+                t(uid, "✅ Сповіщення вимкнено.", "✅ Alerts disabled."),
+            )
+            await alerts_show_menu(q, uid, context.bot)
             return
         if not ALERT_OBLAST.get(uid) and not ALERT_REGION.get(uid):
             try:
                 rids = await ua_region_ids()
             except Exception:
-                await q.message.reply_text(
+                await send_with_cleanup(
+                    context.bot,
+                    q.message.chat_id,
+                    q.message.reply_text,
                     t(uid, "⚠️ Не вдалося увімкнути тривоги (помилка конфігурації/API).",
-                       "⚠️ Could not enable alerts (config/API error).")
+                       "⚠️ Could not enable alerts (config/API error)."),
                 )
                 return
             if rids:
@@ -1898,12 +2279,17 @@ async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ALERT_OBLAST[uid] = rids[0]
         ALERTS_ENABLED[uid] = True
         ALERT_LAST_USER_STATE.pop(uid, None)
-        await q.message.reply_text(t(uid, "✅ Сповіщення увімкнено.", "✅ Alerts enabled."))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            t(uid, "✅ Сповіщення увімкнено.", "✅ Alerts enabled."),
+        )
         if not ALERT_OBLAST.get(uid):
-            await alerts_oblast_menu(q, uid, 0)
+            await alerts_oblast_menu(q, uid, context.bot, 0)
             return
         sync_alert_regions(uid)
-        await alerts_show_menu(q, uid)
+        await alerts_show_menu(q, uid, context.bot)
         return
 
     if data.startswith("alerts:oblast:"):
@@ -1912,14 +2298,14 @@ async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         action = parts[2]
         if action == "menu":
-            await alerts_oblast_menu(q, uid, 0)
+            await alerts_oblast_menu(q, uid, context.bot, 0)
             return
         if action == "page" and len(parts) == 4:
             try:
                 page = int(parts[3])
             except Exception:
                 page = 0
-            await alerts_oblast_menu(q, uid, page)
+            await alerts_oblast_menu(q, uid, context.bot, page)
             return
         if action == "set" and len(parts) == 4:
             rid = parts[3]
@@ -1927,8 +2313,13 @@ async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sync_alert_regions(uid)
             ALERT_LAST_USER_STATE.pop(uid, None)
             name = region_display_name(uid, rid) or rid
-            await q.message.reply_text(t(uid, f"✅ Область встановлено: {name}.", f"✅ Oblast set: {name}."))
-            await alerts_show_menu(q, uid)
+            await send_with_cleanup(
+                context.bot,
+                q.message.chat_id,
+                q.message.reply_text,
+                t(uid, f"✅ Область встановлено: {name}.", f"✅ Oblast set: {name}."),
+            )
+            await alerts_show_menu(q, uid, context.bot)
             return
 
 # =========================
@@ -1943,14 +2334,23 @@ async def product_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, key = data.split(":", 1)
     prod = PRODUCTS.get(key)
     if not prod:
-        await q.message.reply_text(C(uid, "products_not_found"))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "products_not_found"),
+            reply_markup=products_kb(uid),
+        )
         return
 
     caption = product_caption(uid, prod)
     image_path = PRODUCT_IMAGES_DIR / prod.image_name
     if image_path.is_file():
         with open(image_path, "rb") as photo:
-            await q.message.reply_photo(
+            await send_with_cleanup(
+                context.bot,
+                q.message.chat_id,
+                q.message.reply_photo,
                 photo=photo,
                 caption=caption,
                 parse_mode=ParseMode.MARKDOWN,
@@ -1958,7 +2358,10 @@ async def product_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    await q.message.reply_text(
+    await send_with_cleanup(
+        context.bot,
+        q.message.chat_id,
+        q.message.reply_text,
         caption,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=product_detail_kb(uid),
@@ -1976,35 +2379,109 @@ async def apply_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = _last_apply.get(uid, 0.0)
     if now - last < COOLDOWN_SEC:
         remain = int(max(1, COOLDOWN_SEC - (now - last)))
-        await q.message.reply_text(C(uid, "cooldown").format(sec=remain))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "cooldown").format(sec=remain),
+        )
         return ConversationHandler.END
 
     _last_apply[uid] = now
-    await q.message.reply_text(C(uid, "apply_intro"), parse_mode=ParseMode.MARKDOWN)
+    await send_with_cleanup(
+        context.bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        C(uid, "apply_intro"),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return ASK_NAME
+
+async def apply_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = (update.message.text or "").strip()
+    if not name:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Вкажіть імʼя текстом.", "Please provide your name as text."),
+        )
+        return ASK_NAME
+
+    context.user_data["name"] = clip(name, 100)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "ask_contact"),
+    )
+    return ASK_CONTACT
+
+async def apply_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    contact = (update.message.text or "").strip()
+    if not contact:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Вкажіть контакт текстом.", "Please provide a contact as text."),
+        )
+        return ASK_CONTACT
+
+    context.user_data["contact"] = clip(contact, 120)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "ask_purpose"),
+    )
     return ASK_PURPOSE
 
 async def apply_purpose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     purpose = (update.message.text or "").strip()
     if not purpose:
-        await update.message.reply_text(t(uid, "Напишіть мету одним рядком.", "Please write purpose in one short line."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Напишіть мету одним рядком.", "Please write purpose in one short line."),
+        )
         return ASK_PURPOSE
 
     context.user_data["purpose"] = clip(purpose, 300)
-    await update.message.reply_text(C(uid, "ask_device"))
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "ask_device"),
+    )
     return ASK_DEVICE
 
 async def apply_device(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     device = (update.message.text or "").strip()
     if not device:
-        await update.message.reply_text(t(uid, "Вкажіть пристрій текстом.", "Please specify the device as text."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Вкажіть пристрій текстом.", "Please specify the device as text."),
+        )
         return ASK_DEVICE
 
     context.user_data["device"] = clip(device, 200)
     word = "ПІДТВЕРДЖУЮ" if get_lang(uid) == "uk" else "CONFIRM"
     msg = C(uid, "confirm").replace("ПІДТВЕРДЖУЮ", word).replace("CONFIRM", word)
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        msg,
+        parse_mode=ParseMode.MARKDOWN,
+    )
     return ASK_CONFIRM
 
 async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2012,7 +2489,13 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip().upper()
     word = "ПІДТВЕРДЖУЮ" if get_lang(uid) == "uk" else "CONFIRM"
     if txt != word:
-        await update.message.reply_text(C(uid, "cancel"))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "cancel"),
+            reply_markup=menu_only_kb(uid),
+        )
         return ConversationHandler.END
 
     u = update.effective_user
@@ -2022,6 +2505,8 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=u.id,
         chat_id=update.effective_chat.id,
         who=who(u),
+        name=context.user_data.get("name", ""),
+        contact=context.user_data.get("contact", ""),
         purpose=context.user_data.get("purpose", ""),
         device=context.user_data.get("device", ""),
         ts=time.time(),
@@ -2032,7 +2517,7 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ai_enabled():
         reco = await ask_ai(
             ADMIN_ID,
-            f"Користувач: {req.who}\nМета: {req.purpose}\nПристрій: {req.device}",
+            f"Користувач: {req.who}\nІмʼя: {req.name}\nКонтакт: {req.contact}\nМета: {req.purpose}\nПристрій: {req.device}",
             mode="admin",
         )
 
@@ -2040,6 +2525,8 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_text = (
         "🆕 ЗАЯВКА\n\n"
         f"👤 {req.who}\n"
+        f"🧑 {req.name}\n"
+        f"📞 {req.contact}\n"
         f"🎯 {req.purpose}\n"
         f"📦 {req.device}\n\n"
         f"🤖 AI\n{reco}\n\n"
@@ -2048,11 +2535,233 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     delivered = True
     try:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, reply_markup=admin_kb(key))
+        await send_with_cleanup(
+            context.bot,
+            ADMIN_ID,
+            context.bot.send_message,
+            chat_id=ADMIN_ID,
+            text=admin_text,
+            reply_markup=admin_kb(key),
+        )
     except Exception:
         delivered = False
 
-    await update.message.reply_text(C(uid, "sent") if delivered else C(uid, "sent_admin_fail"))
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "sent") if delivered else C(uid, "sent_admin_fail"),
+        reply_markup=menu_only_kb(uid),
+    )
+    return ConversationHandler.END
+
+# =========================
+# Contact form handlers (AI triage)
+# =========================
+async def contact_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    await send_with_cleanup(
+        context.bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        C(uid, "contact_form_question"),
+    )
+    return CONTACT_QUESTION
+
+async def contact_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    question = (update.message.text or "").strip()
+    if not question:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "contact_form_question"),
+        )
+        return CONTACT_QUESTION
+    context.user_data["contact_question"] = clip(question, 800)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "contact_form_name"),
+    )
+    return CONTACT_NAME
+
+async def contact_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    name = (update.message.text or "").strip()
+    if not name:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "contact_form_name"),
+        )
+        return CONTACT_NAME
+    context.user_data["contact_name"] = clip(name, 100)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "contact_form_contact"),
+    )
+    return CONTACT_CONTACT
+
+async def contact_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    contact_info = (update.message.text or "").strip()
+    if not contact_info:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "contact_form_contact"),
+        )
+        return CONTACT_CONTACT
+
+    context.user_data["contact_info"] = clip(contact_info, 120)
+    question = context.user_data.get("contact_question", "")
+    name = context.user_data.get("contact_name", "")
+
+    ai_result = await ai_contact_triage(uid, question)
+    if ai_result and ai_result.get("can_answer") and ai_result.get("answer"):
+        answer = clip(str(ai_result["answer"]), 1500)
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            answer,
+            reply_markup=menu_only_kb(uid),
+        )
+        return ConversationHandler.END
+
+    admin_text = (
+        "📩 КОНТАКТ ЗАПИТ\n\n"
+        f"👤 {who(update.effective_user)}\n"
+        f"🧑 {name}\n"
+        f"📞 {context.user_data.get('contact_info', '')}\n"
+        f"❓ {question}\n\n"
+        f"ID: {uid}"
+    )
+    delivered = True
+    try:
+        await send_with_cleanup(
+            context.bot,
+            ADMIN_ID,
+            context.bot.send_message,
+            chat_id=ADMIN_ID,
+            text=admin_text,
+        )
+    except Exception:
+        delivered = False
+
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "contact_sent") if delivered else C(uid, "contact_sent_admin_fail"),
+        reply_markup=menu_only_kb(uid),
+    )
+    return ConversationHandler.END
+
+# =========================
+# Service form handlers
+# =========================
+async def service_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    await send_with_cleanup(
+        context.bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        C(uid, "service_form_product"),
+    )
+    return SERVICE_PRODUCT
+
+async def service_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    product = (update.message.text or "").strip()
+    if not product:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "service_form_product"),
+        )
+        return SERVICE_PRODUCT
+    context.user_data["service_product"] = clip(product, 120)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "service_form_serial"),
+    )
+    return SERVICE_SERIAL
+
+async def service_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    serial = (update.message.text or "").strip()
+    if not serial:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "service_form_serial"),
+        )
+        return SERVICE_SERIAL
+    context.user_data["service_serial"] = clip(serial, 120)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "service_form_contact"),
+    )
+    return SERVICE_CONTACT
+
+async def service_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    contact_info = (update.message.text or "").strip()
+    if not contact_info:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            C(uid, "service_form_contact"),
+        )
+        return SERVICE_CONTACT
+
+    context.user_data["service_contact"] = clip(contact_info, 120)
+    admin_text = (
+        "🛠️ СЕРВІСНА ЗАЯВКА\n\n"
+        f"👤 {who(update.effective_user)}\n"
+        f"🛠️ {context.user_data.get('service_product', '')}\n"
+        f"🔢 {context.user_data.get('service_serial', '')}\n"
+        f"📞 {context.user_data.get('service_contact', '')}\n\n"
+        f"ID: {uid}"
+    )
+    delivered = True
+    try:
+        await send_with_cleanup(
+            context.bot,
+            ADMIN_ID,
+            context.bot.send_message,
+            chat_id=ADMIN_ID,
+            text=admin_text,
+        )
+    except Exception:
+        delivered = False
+
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        C(uid, "service_sent") if delivered else C(uid, "service_sent_admin_fail"),
+        reply_markup=menu_only_kb(uid),
+    )
     return ConversationHandler.END
 
 # =========================
@@ -2067,21 +2776,43 @@ async def faq_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = _last_ai.get(uid, 0.0)
     if now - last < AI_COOLDOWN_SEC:
         remain = int(max(1, AI_COOLDOWN_SEC - (now - last)))
-        await q.message.reply_text(C(uid, "cooldown").format(sec=remain))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            C(uid, "cooldown").format(sec=remain),
+        )
         return ConversationHandler.END
 
     _last_ai[uid] = now
-    await q.message.reply_text(C(uid, "faq_hint"), parse_mode=ParseMode.MARKDOWN)
+    await send_with_cleanup(
+        context.bot,
+        q.message.chat_id,
+        q.message.reply_text,
+        C(uid, "faq_hint"),
+        parse_mode=ParseMode.MARKDOWN,
+    )
     return ASK_FAQ
 
 async def faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     q = (update.message.text or "").strip()
     if not q:
-        await update.message.reply_text(t(uid, "Напишіть питання текстом.", "Please send a text question."))
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Напишіть питання текстом.", "Please send a text question."),
+        )
         return ASK_FAQ
     ans = await ask_ai(uid, q, mode="faq")
-    await update.message.reply_text(ans)
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        ans,
+        reply_markup=menu_only_kb(uid),
+    )
     return ConversationHandler.END
 
 # =========================
@@ -2093,17 +2824,30 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.from_user.id != ADMIN_ID:
         uid = q.from_user.id
-        await q.message.reply_text(t(uid, "⛔ Тільки адмін.", "⛔ Admin only."))
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+        )
         return
 
     _, action, key = q.data.split(":", 2)
     req = PENDING.pop(key, None)
     if not req:
-        await q.message.reply_text("ℹ️ Already processed / request not found.")
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            "ℹ️ Already processed / request not found.",
+        )
         return
 
     if action == "approve":
-        await context.bot.send_message(
+        await send_with_cleanup(
+            context.bot,
+            req.chat_id,
+            context.bot.send_message,
             chat_id=req.chat_id,
             text=t(
                 req.user_id,
@@ -2111,10 +2855,19 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "✅ Your request is **approved**. The admin will provide onboarding/access.",
             ),
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(req.user_id),
         )
-        await q.message.reply_text(f"✅ Approved: {req.who}")
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            f"✅ Approved: {req.who}",
+        )
     else:
-        await context.bot.send_message(
+        await send_with_cleanup(
+            context.bot,
+            req.chat_id,
+            context.bot.send_message,
             chat_id=req.chat_id,
             text=t(
                 req.user_id,
@@ -2122,8 +2875,14 @@ async def admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Your request is **denied**. Please try later.",
             ),
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=menu_only_kb(req.user_id),
         )
-        await q.message.reply_text(f"❌ Denied: {req.who}")
+        await send_with_cleanup(
+            context.bot,
+            q.message.chat_id,
+            q.message.reply_text,
+            f"❌ Denied: {req.who}",
+        )
 
 # =========================
 # Error handler (logs exceptions)
@@ -2169,7 +2928,7 @@ def main():
     # menu/info callbacks only
     app.add_handler(CallbackQueryHandler(
         menu_cb,
-        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:products|products:menu|info:system|info:gear|info:rules|news:test)$"
+        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:contact|info:service|info:products|products:menu|info:system|info:gear|info:rules)$"
     ))
 
     app.add_handler(CallbackQueryHandler(alerts_cb, pattern=r"^alerts:"))
@@ -2183,12 +2942,38 @@ def main():
     apply_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(apply_start_cb, pattern=r"^apply:start$")],
         states={
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_name)],
+            ASK_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_contact)],
             ASK_PURPOSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_purpose)],
             ASK_DEVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_device)],
             ASK_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_confirm)],
         },
         fallbacks=[CommandHandler("cancel", cancel_cmd)],
         # per_message=False (default): важно, потому что после callback идут обычные сообщения
+    )
+
+    # contact form conversation (entry is button only)
+    contact_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(contact_start_cb, pattern=r"^contact:form$")],
+        states={
+            CONTACT_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, contact_question)],
+            CONTACT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, contact_name)],
+            CONTACT_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, contact_contact)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_cmd)],
+        # per_message=False (default)
+    )
+
+    # service form conversation (entry is button only)
+    service_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(service_start_cb, pattern=r"^service:form$")],
+        states={
+            SERVICE_PRODUCT: [MessageHandler(filters.TEXT & ~filters.COMMAND, service_product)],
+            SERVICE_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, service_serial)],
+            SERVICE_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, service_contact)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_cmd)],
+        # per_message=False (default)
     )
 
     # faq conversation (entry is button only)
@@ -2202,6 +2987,8 @@ def main():
     )
 
     app.add_handler(apply_conv)
+    app.add_handler(contact_conv)
+    app.add_handler(service_conv)
     app.add_handler(faq_conv)
 
     app.add_error_handler(error_handler)
