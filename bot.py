@@ -2056,7 +2056,6 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
                 model=NEWS_IMAGE_MODEL,
                 prompt=prompt,
                 size=NEWS_IMAGE_SIZE,
-                response_format="b64_json",
             ),
             timeout=NEWS_IMAGE_TIMEOUT_SEC,
         )
@@ -2107,7 +2106,6 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
                 model=NEWS_IMAGE_MODEL,
                 prompt=prompt,
                 size=NEWS_IMAGE_SIZE,
-                response_format="b64_json",
             ),
             timeout=NEWS_IMAGE_TIMEOUT_SEC,
         )
