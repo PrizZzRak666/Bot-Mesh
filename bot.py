@@ -2642,12 +2642,10 @@ async def _build_news_summary_text() -> tuple[str, List[str], str, List[Dict[str
     links = [it["link"] for it in items if it.get("link")]
     return body, links, ai_text, items
 
-async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
-    if not NEWS_SUMMARY_ENABLED:
-        return
+async def _post_news_summary(context: ContextTypes.DEFAULT_TYPE) -> bool:
     text, links, ai_text, items = await _build_news_summary_text()
     if not text:
-        return
+        return False
     delivered = False
     image_bytes = await _generate_summary_image(items, ai_text)
     if NEWS_SUMMARY_SEND_TO_CHANNEL and NEWS_CHANNEL_ID:
@@ -2668,6 +2666,12 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
             logger.exception("Summary post failed")
     if delivered and links:
         _mark_summary_links(links)
+    return delivered
+
+async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    if not NEWS_SUMMARY_ENABLED:
+        return
+    await _post_news_summary(context)
 
 # =========================
 # Conversation states
@@ -2772,6 +2776,181 @@ async def test_channel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ {e}",
             reply_markup=menu_only_kb(uid),
         )
+
+def _broadcast_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    if context.args:
+        return " ".join(context.args).strip()
+    msg = getattr(update, "message", None)
+    if msg and msg.reply_to_message:
+        reply = msg.reply_to_message
+        return (reply.text or reply.caption or "").strip()
+    return ""
+
+async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not news_config_ok():
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⚠️ Новини не налаштовано.", "⚠️ News not configured."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if _news_job_lock.locked():
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⏳ Новини вже оновлюються.", "⏳ News already running."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Запускаю оновлення новин...", "⏳ Running news update..."),
+    )
+    try:
+        async with _news_job_lock:
+            await _news_job_inner(context)
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "✅ Готово.", "✅ Done."),
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("Manual news run failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час запуску.", "❌ Failed to run news job."),
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def summary_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_SUMMARY_ENABLED:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⚠️ NEWS_SUMMARY_ENABLED вимкнено.", "⚠️ NEWS_SUMMARY_ENABLED is off."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Запускаю зведення...", "⏳ Running summary..."),
+    )
+    try:
+        delivered = await _post_news_summary(context)
+        msg = (
+            t(uid, "✅ Зведення відправлено.", "✅ Summary sent.")
+            if delivered
+            else t(uid, "ℹ️ Немає новин для зведення.", "ℹ️ No news for summary.")
+        )
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            msg,
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("Manual summary run failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час запуску.", "❌ Failed to run summary."),
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    text = _broadcast_text(update, context)
+    if not text:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "Використання: /broadcast <текст> або відповідь на повідомлення.",
+              "Usage: /broadcast <text> or reply to a message."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    text = clip(text, 4000)
+    if not KNOWN_USERS:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Немає користувачів для розсилки.", "ℹ️ No users to broadcast."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    total = len(KNOWN_USERS)
+    sent = 0
+    removed = 0
+    failed = 0
+    for target_id in list(KNOWN_USERS):
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=_append_footer(text, target_id),
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except Forbidden:
+            KNOWN_USERS.discard(target_id)
+            _save_known_users()
+            removed += 1
+        except Exception:
+            failed += 1
+    result = (
+        f"✅ Sent: {sent}/{total} | Removed: {removed} | Failed: {failed}"
+    )
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        result,
+        reply_markup=menu_only_kb(uid),
+    )
 
 async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -3728,6 +3907,9 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("health", health_cmd))
     app.add_handler(CommandHandler("test_channel", test_channel_cmd))
+    app.add_handler(CommandHandler("news_now", news_now_cmd))
+    app.add_handler(CommandHandler("summary_now", summary_now_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("regions", regions_cmd))
 
     # menu/info callbacks only
