@@ -4,6 +4,7 @@ import secrets
 import asyncio
 import logging
 import json
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
@@ -169,18 +170,19 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
 CONTENT = {
     "uk": {
         "company": (
-            "🏢 **УКРАВІАКОСТЕХ**\n\n"
-            "УКРАВІАКОСТЕХ — інженерна компанія, що розробляє та підтримує автономні та інфраструктурні рішення.\n"
-            "Цей бот — офіційний інтерфейс керованого доступу до резервної системи комунікації в екстрених сценаріях.\n\n"
-            "🔐 Доступ надається **лише за запитом**."
+            "🏢 **ТОВ «Українські Авіаційно-Космічні Технології»**\n\n"
+            "Розробляємо та постачаємо безпілотні та антидронні рішення.\n\n"
+            "• Код ЄДРПОУ: 45084740\n"
+            "• Адреса: Україна, 65074, м. Одеса, вул. Авіаційна, 18, оф. 1771\n"
+            "• Контакт: +38 (063) 505-62-27\n"
+            "• Директор: Марченко Анастасія Сергіївна"
         ),
         "products": (
-            "🧩 **Рішення та продукти (публічно, без технічних деталей)**\n\n"
-            "• Резервні автономні системи комунікації для екстрених сценаріїв\n"
-            "• Інфраструктурні рішення для координації під час НС\n"
-            "• Розгортання, інтеграція та підтримка мереж\n"
-            "• Супровід підключення та підтримувані користувацькі комплекти"
+            "🧩 **Каталог продуктів**\n\n"
+            "Оберіть продукт, щоб отримати фото та ключові характеристики.\n"
+            "ℹ️ Детальні конфігурації та частотні діапазони — за запитом."
         ),
+        "products_not_found": "⚠️ Продукт не знайдено.",
         "system": (
             "📡 **Як працює система (загально)**\n\n"
             "Автономний канал обміну короткими повідомленнями для ситуацій, коли немає світла/інтернету/мобільного звʼязку.\n"
@@ -222,18 +224,19 @@ CONTENT = {
     },
     "en": {
         "company": (
-            "🏢 **UkrAviaKosTech**\n\n"
-            "Engineering company building autonomous and infrastructure-grade solutions.\n"
-            "This bot provides managed access to a reserve emergency communication system.\n"
-            "🔐 Access is **by request only**."
+            "🏢 **Ukrainian Aviation & Space Technologies LLC**\n\n"
+            "We design and supply UAV and counter-UAV solutions.\n\n"
+            "• EDRPOU code: 45084740\n"
+            "• Address: 18 Aviatsiina St, Office 1771, Odesa, 65074, Ukraine\n"
+            "• Contact: +38 (063) 505-62-27\n"
+            "• Director: Anastasiia Marchenko"
         ),
         "products": (
-            "🧩 **Solutions (public, no technical details)**\n\n"
-            "• Emergency reserve communication\n"
-            "• Coordination infrastructure\n"
-            "• Deployment, integration and support\n"
-            "• Supported user kits and onboarding assistance"
+            "🧩 **Product catalog**\n\n"
+            "Choose a product to see photos and key characteristics.\n"
+            "ℹ️ Detailed configurations and frequency ranges are available on request."
         ),
+        "products_not_found": "⚠️ Product not found.",
         "system": (
             "📡 **How it works (high level)**\n\n"
             "An autonomous short-message channel designed for power/internet/mobile outages.\n"
@@ -279,6 +282,447 @@ def C(user_id: int, key: str) -> str:
 # =========================
 # Menu UI
 # =========================
+@dataclass
+class ProductInfo:
+    key: str
+    menu_uk: str
+    menu_en: str
+    title_uk: str
+    title_en: str
+    specs_uk: List[str]
+    specs_en: List[str]
+    image_name: str
+
+PRODUCT_IMAGES_DIR = Path(__file__).resolve().parent / "data" / "product_images"
+
+PRODUCTS_ORDER = [
+    "apostol_intelligent",
+    "apostol_extended",
+    "vizor",
+    "apostol_backpack",
+    "apostol_rifle",
+    "manul_2b",
+    "manul_2r",
+    "alligator",
+    "hydra_10_opt",
+    "hydra_8_opt",
+    "hydra_7_opt",
+    "hydra_10",
+    "hydra_8",
+    "hydra_7",
+    "hydra_10_fold",
+    "bee",
+]
+
+PRODUCTS: Dict[str, ProductInfo] = {
+    "apostol_intelligent": ProductInfo(
+        key="apostol_intelligent",
+        menu_uk="🛡️ Апостол Intelligent",
+        menu_en="🛡️ Apostol Intelligent",
+        title_uk="Апостол Intelligent",
+        title_en="Apostol Intelligent",
+        specs_uk=[
+            "Всенаправлена система протидії БПЛА, 6-канальна",
+            "Дальність впливу: до 250 м",
+            "Потужність модульної системи (10 модулів): >=500 Вт",
+            "Час розгортання: ~3 хв",
+            "Вага (макс. комплектація): ~25 кг",
+            "Температура експлуатації: -40..+50 C; охолодження імерсійне",
+        ],
+        specs_en=[
+            "Omnidirectional counter-UAV system, 6-channel",
+            "Effective range: up to 250 m",
+            "Module system power (10 modules): >=500 W",
+            "Deployment time: ~3 min",
+            "Weight (max config): ~25 kg",
+            "Operating temp: -40..+50 C; immersion cooling",
+        ],
+        image_name="apostol_intelligent.png",
+    ),
+    "apostol_extended": ProductInfo(
+        key="apostol_extended",
+        menu_uk="🛡️ Апостол (розширений)",
+        menu_en="🛡️ Apostol (extended)",
+        title_uk="Апостол (розширений діапазон)",
+        title_en="Apostol (extended range)",
+        specs_uk=[
+            "Всенаправлена система з розширеним діапазоном (для авто/позиції)",
+            "Дальність впливу: до 250 м",
+            "Потужність: >=300 Вт (базова) або >=600 Вт (посилена)",
+            "Час розгортання: ~3 хв",
+            "Вага: ~12 кг",
+            "Температура експлуатації: -40..+50 C",
+        ],
+        specs_en=[
+            "Omnidirectional system with extended range (auto/position variants)",
+            "Effective range: up to 250 m",
+            "Power: >=300 W (base) or >=600 W (enhanced)",
+            "Deployment time: ~3 min",
+            "Weight: ~12 kg",
+            "Operating temp: -40..+50 C",
+        ],
+        image_name="apostol_extended.png",
+    ),
+    "vizor": ProductInfo(
+        key="vizor",
+        menu_uk="🛰️ Vizor (детектор)",
+        menu_en="🛰️ Vizor detector",
+        title_uk="Детектор «Vizor»",
+        title_en="“Vizor” detector",
+        specs_uk=[
+            "Детектор автоматизації для системи «Апостол»",
+            "Дальність виявлення: до 5 км",
+            "Швидкість сканування: 5 с",
+            "Живлення: 9-12.6 В (3S), робота 6-8 год",
+            "Габарити: 160x190x50 мм; вага до 850 г",
+            "Екрани: інформаційний + відео",
+        ],
+        specs_en=[
+            "Automation detector for the “Apostol” system",
+            "Detection range: up to 5 km",
+            "Scan speed: 5 s",
+            "Power: 9-12.6 V (3S), 6-8 h operation",
+            "Size: 160x190x50 mm; weight up to 850 g",
+            "Displays: info + video",
+        ],
+        image_name="vizor.png",
+    ),
+    "apostol_backpack": ProductInfo(
+        key="apostol_backpack",
+        menu_uk="🎒 РЕБ-рюкзак «Апостол»",
+        menu_en="🎒 EW backpack “Apostol”",
+        title_uk="РЕБ-рюкзак «Апостол»",
+        title_en="EW backpack “Apostol”",
+        specs_uk=[
+            "Мобільний двохдіапазонний комплекс купольного захисту",
+            "Потужність: 100 або 200 Вт (варіанти)",
+            "Дальність впливу: до 250 м",
+            "Охолодження: захист від перегріву",
+            "Температура експлуатації: -40..+50 C",
+            "Комплект: антени, пульт, кабелі, акумулятор, рюкзак",
+        ],
+        specs_en=[
+            "Mobile dual-band omnidirectional protection system",
+            "Power: 100 or 200 W (variants)",
+            "Effective range: up to 250 m",
+            "Cooling: overheat protection",
+            "Operating temp: -40..+50 C",
+            "Kit: antennas, controller, cables, battery, backpack",
+        ],
+        image_name="apostol_backpack.png",
+    ),
+    "apostol_rifle": ProductInfo(
+        key="apostol_rifle",
+        menu_uk="🔫 РЕБ-рушниця «Апостол»",
+        menu_en="🔫 EW rifle “Apostol”",
+        title_uk="РЕБ-рушниця «Апостол»",
+        title_en="EW rifle “Apostol”",
+        specs_uk=[
+            "Мобільний двохдіапазонний комплекс направленої дії",
+            "Потужність: 200 або 400 Вт",
+            "Дальність впливу: до 500 м",
+            "Час роботи: до 40 хв",
+            "Охолодження: захист від перегріву",
+            "Температура експлуатації: -40..+50 C",
+        ],
+        specs_en=[
+            "Mobile dual-band directional system",
+            "Power: 200 or 400 W",
+            "Effective range: up to 500 m",
+            "Operating time: up to 40 min",
+            "Cooling: overheat protection",
+            "Operating temp: -40..+50 C",
+        ],
+        image_name="apostol_rifle.png",
+    ),
+    "manul_2b": ProductInfo(
+        key="manul_2b",
+        menu_uk="✈️ БПЛА «Манул 2Б»",
+        menu_en="✈️ UAV “Manul 2B”",
+        title_uk="БПЛА літакового типу «Манул 2Б»",
+        title_en="Fixed-wing UAV “Manul 2B”",
+        specs_uk=[
+            "Макс дальність: 300 км; тактичний радіус 150 км",
+            "Тривалість польоту: до 3 год",
+            "Висота: до 2000 м (робоча ~300 м)",
+            "Швидкість: крейсерська 22 м/с, макс 30 м/с",
+            "Оптико-електронні засоби: відео та ІЧ",
+        ],
+        specs_en=[
+            "Max range: 300 km; tactical radius 150 km",
+            "Endurance: up to 3 h",
+            "Altitude: up to 2000 m (working ~300 m)",
+            "Speed: cruise 22 m/s, max 30 m/s",
+            "Sensors: video + IR",
+        ],
+        image_name="manul_2b.png",
+    ),
+    "manul_2r": ProductInfo(
+        key="manul_2r",
+        menu_uk="✈️ БПЛА «Манул 2Р»",
+        menu_en="✈️ UAV “Manul 2R”",
+        title_uk="БПЛА літакового типу «Манул 2Р»",
+        title_en="Fixed-wing UAV “Manul 2R”",
+        specs_uk=[
+            "Макс дальність: 550 км; тактичний радіус 300 км",
+            "Тривалість польоту: до 5 год",
+            "Висота: до 2000 м (робоча ~800 м)",
+            "Швидкість: крейсерська 22 м/с, макс 30 м/с",
+            "Оптика: відео, ІЧ, 4K відео, фото",
+        ],
+        specs_en=[
+            "Max range: 550 km; tactical radius 300 km",
+            "Endurance: up to 5 h",
+            "Altitude: up to 2000 m (working ~800 m)",
+            "Speed: cruise 22 m/s, max 30 m/s",
+            "Sensors: video, IR, 4K video, photo",
+        ],
+        image_name="manul_2r.png",
+    ),
+    "alligator": ProductInfo(
+        key="alligator",
+        menu_uk="✈️ БПЛА «Алігатор»",
+        menu_en="✈️ UAV “Alligator”",
+        title_uk="БПЛА літакового типу «Алігатор»",
+        title_en="Fixed-wing UAV “Alligator”",
+        specs_uk=[
+            "Макс дальність: 32 км; тактичний радіус 32 км",
+            "Тривалість польоту: до 30 хв",
+            "Висота: до 3000 м (робоча ~1000 м)",
+            "Швидкість: крейсерська 22 м/с, макс 25 м/с",
+            "Оптика: відео, ІЧ, аналогове FPV",
+        ],
+        specs_en=[
+            "Max range: 32 km; tactical radius 32 km",
+            "Endurance: up to 30 min",
+            "Altitude: up to 3000 m (working ~1000 m)",
+            "Speed: cruise 22 m/s, max 25 m/s",
+            "Sensors: video, IR, analog FPV",
+        ],
+        image_name="alligator.png",
+    ),
+    "hydra_10_opt": ProductInfo(
+        key="hydra_10_opt",
+        menu_uk="🛰️ «Гідра 10 PRO Optical»",
+        menu_en="🛰️ “Hydra 10 PRO Optical”",
+        title_uk="БПЛА «Гідра 10 PRO Optical»",
+        title_en="UAV “Hydra 10 PRO Optical”",
+        specs_uk=[
+            "Дальність: 5/10/15 км (за потребою)",
+            "Тактичний радіус: 4-5 / 8-10 / 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 100 м (робоча 15 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео + тепловізор; оптоволоконний зв'язок",
+        ],
+        specs_en=[
+            "Range: 5/10/15 km (as required)",
+            "Tactical radius: 4-5 / 8-10 / 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 100 m (working 15 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video + thermal; fiber link",
+        ],
+        image_name="hydra_10_opt.png",
+    ),
+    "hydra_8_opt": ProductInfo(
+        key="hydra_8_opt",
+        menu_uk="🛰️ «Гідра 8 PRO Optical»",
+        menu_en="🛰️ “Hydra 8 PRO Optical”",
+        title_uk="БПЛА «Гідра 8 PRO Optical»",
+        title_en="UAV “Hydra 8 PRO Optical”",
+        specs_uk=[
+            "Дальність: 5/10/15 км (за потребою)",
+            "Тактичний радіус: 4-5 / 8-10 / 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 100 м (робоча 15 м)",
+            "Швидкість: макс 33 м/с",
+            "Оптика: відео + тепловізор; оптоволоконний зв'язок",
+        ],
+        specs_en=[
+            "Range: 5/10/15 km (as required)",
+            "Tactical radius: 4-5 / 8-10 / 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 100 m (working 15 m)",
+            "Speed: max 33 m/s",
+            "Sensors: video + thermal; fiber link",
+        ],
+        image_name="hydra_8_opt.png",
+    ),
+    "hydra_7_opt": ProductInfo(
+        key="hydra_7_opt",
+        menu_uk="🛰️ «Гідра 7 PRO Optical»",
+        menu_en="🛰️ “Hydra 7 PRO Optical”",
+        title_uk="БПЛА «Гідра 7 PRO Optical»",
+        title_en="UAV “Hydra 7 PRO Optical”",
+        specs_uk=[
+            "Дальність: 5/10/15 км (за потребою)",
+            "Тактичний радіус: 4-5 / 8-10 / 12-15 км",
+            "Тривалість польоту: 10-30 хв",
+            "Висота: до 100 м (робоча 15 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео + тепловізор; оптоволоконний зв'язок",
+        ],
+        specs_en=[
+            "Range: 5/10/15 km (as required)",
+            "Tactical radius: 4-5 / 8-10 / 12-15 km",
+            "Endurance: 10-30 min",
+            "Altitude: up to 100 m (working 15 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video + thermal; fiber link",
+        ],
+        image_name="hydra_7_opt.png",
+    ),
+    "hydra_10": ProductInfo(
+        key="hydra_10",
+        menu_uk="🛰️ «Гідра 10 PRO»",
+        menu_en="🛰️ “Hydra 10 PRO”",
+        title_uk="БПЛА «Гідра 10 PRO»",
+        title_en="UAV “Hydra 10 PRO”",
+        specs_uk=[
+            "Макс дальність: 22 км; тактичний радіус 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 3000 м (робоча 800 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео, світлочутлива камера",
+            "Виявлення типових цілей: до 1000 м",
+        ],
+        specs_en=[
+            "Max range: 22 km; tactical radius 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 3000 m (working 800 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video, low-light camera",
+            "Target detection: up to 1000 m",
+        ],
+        image_name="hydra_10.png",
+    ),
+    "hydra_8": ProductInfo(
+        key="hydra_8",
+        menu_uk="🛰️ «Гідра 8 PRO»",
+        menu_en="🛰️ “Hydra 8 PRO”",
+        title_uk="БПЛА «Гідра 8 PRO»",
+        title_en="UAV “Hydra 8 PRO”",
+        specs_uk=[
+            "Макс дальність: 22 км; тактичний радіус 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 3000 м (робоча 800 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео, світлочутлива камера",
+        ],
+        specs_en=[
+            "Max range: 22 km; tactical radius 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 3000 m (working 800 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video, low-light camera",
+        ],
+        image_name="hydra_8.png",
+    ),
+    "hydra_7": ProductInfo(
+        key="hydra_7",
+        menu_uk="🛰️ «Гідра 7 PRO»",
+        menu_en="🛰️ “Hydra 7 PRO”",
+        title_uk="БПЛА «Гідра 7 PRO»",
+        title_en="UAV “Hydra 7 PRO”",
+        specs_uk=[
+            "Макс дальність: 22 км; тактичний радіус 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 3000 м (робоча 800 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео, світлочутлива камера",
+            "Виявлення типових цілей: до 1000 м",
+        ],
+        specs_en=[
+            "Max range: 22 km; tactical radius 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 3000 m (working 800 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video, low-light camera",
+            "Target detection: up to 1000 m",
+        ],
+        image_name="hydra_7.png",
+    ),
+    "hydra_10_fold": ProductInfo(
+        key="hydra_10_fold",
+        menu_uk="🛰️ «Гідра 10 PRO» (складна)",
+        menu_en="🛰️ “Hydra 10 PRO” (folding)",
+        title_uk="БПЛА «Гідра 10 PRO» (складна рама)",
+        title_en="UAV “Hydra 10 PRO” (folding frame)",
+        specs_uk=[
+            "Складна рама",
+            "Макс дальність: 22 км; тактичний радіус 12-15 км",
+            "Тривалість польоту: 15-30 хв",
+            "Висота: до 3000 м (робоча 800 м)",
+            "Швидкість: макс 33 м/с, крейсерська 17 м/с",
+            "Оптика: відео, світлочутлива камера",
+        ],
+        specs_en=[
+            "Folding frame",
+            "Max range: 22 km; tactical radius 12-15 km",
+            "Endurance: 15-30 min",
+            "Altitude: up to 3000 m (working 800 m)",
+            "Speed: max 33 m/s, cruise 17 m/s",
+            "Sensors: video, low-light camera",
+        ],
+        image_name="hydra_10_fold.png",
+    ),
+    "bee": ProductInfo(
+        key="bee",
+        menu_uk="🛸 БПЛА «Бджілка»",
+        menu_en="🛸 UAV “Bee”",
+        title_uk="БПЛА «Бджілка»",
+        title_en="UAV “Bee”",
+        specs_uk=[
+            "Макс дальність: до 5 км; тактичний радіус 4-5 км",
+            "Тривалість польоту: 5-8 хв",
+            "Висота: до 3000 м (робоча 800 м)",
+            "Швидкість: макс 17 м/с",
+            "Розгортання/згортання: ~1 хв; підготовка до польоту 1 хв",
+            "Виявлення типових цілей: до 1000 м",
+        ],
+        specs_en=[
+            "Max range: up to 5 km; tactical radius 4-5 km",
+            "Endurance: 5-8 min",
+            "Altitude: up to 3000 m (working 800 m)",
+            "Speed: max 17 m/s",
+            "Deploy/pack: ~1 min; prep for flight 1 min",
+            "Target detection: up to 1000 m",
+        ],
+        image_name="bee.png",
+    ),
+}
+
+def products_kb(user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    for key in PRODUCTS_ORDER:
+        prod = PRODUCTS.get(key)
+        if not prod:
+            continue
+        label = prod.menu_uk if get_lang(user_id) == "uk" else prod.menu_en
+        rows.append([InlineKeyboardButton(label, callback_data=f"prod:{key}")])
+    back_label = "⬅️ Назад" if get_lang(user_id) == "uk" else "⬅️ Back"
+    rows.append([InlineKeyboardButton(back_label, callback_data="menu:back")])
+    return InlineKeyboardMarkup(rows)
+
+def product_detail_kb(user_id: int) -> InlineKeyboardMarkup:
+    if get_lang(user_id) == "uk":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Каталог", callback_data="products:menu")],
+            [InlineKeyboardButton("🏠 Меню", callback_data="menu:back")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Catalog", callback_data="products:menu")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="menu:back")],
+    ])
+
+def product_caption(user_id: int, prod: ProductInfo) -> str:
+    title = prod.title_uk if get_lang(user_id) == "uk" else prod.title_en
+    specs = prod.specs_uk if get_lang(user_id) == "uk" else prod.specs_en
+    lines = [f"**{title}**", ""]
+    lines.extend([f"• {s}" for s in specs])
+    return "\n".join(lines)
+
 def lang_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -973,8 +1417,12 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "info:company":
         await q.message.reply_text(C(uid, "company"), parse_mode=ParseMode.MARKDOWN)
         return
-    if data == "info:products":
-        await q.message.reply_text(C(uid, "products"), parse_mode=ParseMode.MARKDOWN)
+    if data in ("info:products", "products:menu"):
+        await q.message.reply_text(
+            C(uid, "products"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=products_kb(uid),
+        )
         return
     if data == "info:system":
         await q.message.reply_text(C(uid, "system"), parse_mode=ParseMode.MARKDOWN)
@@ -1036,6 +1484,39 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t(uid, "✅ News job активний. Чекайте публікацій у каналі.", "✅ News job active. Watch the channel.")
         )
         return
+
+# =========================
+# Product callbacks
+# =========================
+async def product_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    data = q.data
+
+    _, key = data.split(":", 1)
+    prod = PRODUCTS.get(key)
+    if not prod:
+        await q.message.reply_text(C(uid, "products_not_found"))
+        return
+
+    caption = product_caption(uid, prod)
+    image_path = PRODUCT_IMAGES_DIR / prod.image_name
+    if image_path.is_file():
+        with open(image_path, "rb") as photo:
+            await q.message.reply_photo(
+                photo=photo,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=product_detail_kb(uid),
+            )
+        return
+
+    await q.message.reply_text(
+        caption,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=product_detail_kb(uid),
+    )
 
 # =========================
 # Apply conversation handlers
@@ -1242,8 +1723,10 @@ def main():
     # menu/info callbacks only
     app.add_handler(CallbackQueryHandler(
         menu_cb,
-        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:products|info:system|info:gear|info:rules|alerts:toggle|news:test)$"
+        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:products|products:menu|info:system|info:gear|info:rules|alerts:toggle|news:test)$"
     ))
+
+    app.add_handler(CallbackQueryHandler(product_cb, pattern=r"^prod:"))
 
     # admin callbacks
     app.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^admin:(approve|deny):"))
