@@ -170,12 +170,23 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
 CONTENT = {
     "uk": {
         "company": (
-            "🏢 **ТОВ «Українські Авіаційно-Космічні Технології»**\n\n"
-            "Розробляємо та постачаємо безпілотні та антидронні рішення.\n\n"
-            "• Код ЄДРПОУ: 45084740\n"
-            "• Адреса: Україна, 65074, м. Одеса, вул. Авіаційна, 18, оф. 1771\n"
-            "• Контакт: +38 (063) 505-62-27\n"
-            "• Директор: Марченко Анастасія Сергіївна"
+            "🏢 **УкрАвіаКосТех**\n\n"
+            "Вітаємо у світі інновацій Українських Авіаційних Технологій, де майбутнє БПЛА стає реальністю. "
+            "Засновані ентузіастами авіації, ми лідируємо на ринку, надаючи першокласні рішення для цивільних та військових потреб.\n\n"
+            "З початку повномасштабної війни, ми пройшли шлях від стартапу до визнаного лідера у сфері БПЛА, "
+            "неодноразово змінюючи галузеві стандарти своїми інноваціями.\n\n"
+            "Наша місія — використовувати потенціал БПЛА для створення безпечнішого і ефективнішого майбутнього, "
+            "а бачення — стати визначальним голосом у технологіях БПЛА на світовій арені.\n\n"
+            "Постійні дослідження та розробки ведуть нас вперед, дозволяючи створювати БПЛА, які випереджають свій час "
+            "та встановлюють нові стандарти в індустрії.\n\n"
+            "Контакти:\n"
+            "• Email: ukrainskiaviacijni@gmail.com\n"
+            "• Телефон (Telegram): 0 755 05 35 18\n"
+            "• Графік: пн-пт 9:00-18:00\n"
+            "• Сайт: https://www.ukrainianaviation.com\n"
+            "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
+            "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
+            "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech"
         ),
         "products": (
             "🧩 **Каталог продуктів**\n\n"
@@ -224,12 +235,24 @@ CONTENT = {
     },
     "en": {
         "company": (
-            "🏢 **Ukrainian Aviation & Space Technologies LLC**\n\n"
-            "We design and supply UAV and counter-UAV solutions.\n\n"
-            "• EDRPOU code: 45084740\n"
-            "• Address: 18 Aviatsiina St, Office 1771, Odesa, 65074, Ukraine\n"
-            "• Contact: +38 (063) 505-62-27\n"
-            "• Director: Anastasiia Marchenko"
+            "🏢 **UkrAviaKosTech**\n\n"
+            "Welcome to the world of innovations in Ukrainian Aviation Technologies, where the future of UAVs "
+            "becomes reality. Founded by aviation enthusiasts, we lead the market by delivering first-class "
+            "solutions for civil and military needs.\n\n"
+            "Since the start of the full-scale war, we have grown from a startup into a recognized UAV leader, "
+            "repeatedly reshaping industry standards through innovation.\n\n"
+            "Our mission is to use the potential of UAVs to create a safer and more efficient future, and our vision "
+            "is to become a defining voice in UAV technologies worldwide.\n\n"
+            "Ongoing research and development keeps us moving forward, enabling UAVs that set new standards "
+            "in the industry.\n\n"
+            "Contacts:\n"
+            "• Email: ukrainskiaviacijni@gmail.com\n"
+            "• Phone (Telegram): 0 755 05 35 18\n"
+            "• Hours: Mon-Fri 9:00-18:00\n"
+            "• Website: https://www.ukrainianaviation.com\n"
+            "• Facebook: https://www.facebook.com/ukr.avia.kos.tech\n"
+            "• Instagram: https://www.instagram.com/ukr.avia.kos.tech\n"
+            "• TikTok: https://www.tiktok.com/@ukr.avia.kos.tech"
         ),
         "products": (
             "🧩 **Product catalog**\n\n"
