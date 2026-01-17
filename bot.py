@@ -902,7 +902,7 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📦 Обладнання", callback_data="info:gear"),
              InlineKeyboardButton("📜 Правила", callback_data="info:rules")],
             [InlineKeyboardButton("💬 Питання та відповіді", callback_data="faq:start")],
-            [InlineKeyboardButton("🚨 Тривоги у регіоні On/Off", callback_data="alerts:toggle")],
+            [InlineKeyboardButton("🚨 Сповіщення про тривогу", callback_data="alerts:menu")],
             [InlineKeyboardButton("📰 Новини → канал (тест)", callback_data="news:test")],
             [InlineKeyboardButton("🌐 Мова / Language", callback_data="lang:menu")],
         ])
@@ -914,7 +914,7 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📦 Equipment", callback_data="info:gear"),
          InlineKeyboardButton("📜 Rules", callback_data="info:rules")],
         [InlineKeyboardButton("💬 Questions & Answers", callback_data="faq:start")],
-        [InlineKeyboardButton("🚨 Regional Air Alerts On/Off", callback_data="alerts:toggle")],
+        [InlineKeyboardButton("🚨 Air Alert Notifications", callback_data="alerts:menu")],
         [InlineKeyboardButton("📰 News → channel (test)", callback_data="news:test")],
         [InlineKeyboardButton("🌐 Language", callback_data="lang:menu")],
     ])
@@ -989,9 +989,17 @@ def parse_region_ids(value: str) -> List[str]:
 UA_ALARM_REGION_IDS = parse_region_ids(env("UA_ALARM_REGION_ID", ""))
 
 ALERTS_ENABLED: Dict[int, bool] = {}
+ALERT_OBLAST: Dict[int, str] = {}
+ALERT_CITY: Dict[int, str] = {}
 ALERT_REGION: Dict[int, List[str]] = {}
 ALERT_LAST_STATE: Dict[str, bool] = {}
 REGION_CACHE: Dict[str, str] = {}
+REGION_DATA_LOADED = False
+REGION_NAME_UA_BY_ID: Dict[str, str] = {}
+REGION_NAME_EN_BY_ID: Dict[str, str] = {}
+REGION_PARENT_BY_ID: Dict[str, str] = {}
+REGION_TYPE_BY_ID: Dict[str, str] = {}
+REGIONS_PER_PAGE = 10
 
 def ua_alarm_enabled() -> bool:
     return UA_ALARM_ENABLED and bool(UA_ALARM_API_KEY)
@@ -1014,43 +1022,116 @@ async def ua_get_json(path: str, client: Optional[httpx.AsyncClient] = None):
         logger.exception("UA alarm request failed: %s", url)
         raise
 
+def _pick_str(item: dict, keys: List[str]) -> str:
+    for k in keys:
+        v = item.get(k)
+        if v:
+            return str(v).strip()
+    return ""
+
+def _region_id(item: dict) -> str:
+    return _pick_str(item, ["regionId", "id", "region_id"])
+
+def _region_parent_id(item: dict) -> str:
+    return _pick_str(item, ["parentRegionId", "parent_id", "regionParentId", "stateRegionId", "state_id", "oblastId", "oblast_id"])
+
+def _norm_region_name(name: str) -> str:
+    s = (name or "").strip().lower()
+    for token in ("область", "обл.", "обл", "oblast"):
+        s = s.replace(token, "")
+    return " ".join(s.split())
+
+def _guess_region_type(item: dict, name_ua: str, name_en: str) -> str:
+    for k in ("regionType", "region_type", "type", "regionTypeName"):
+        v = item.get(k)
+        if isinstance(v, str):
+            val = v.strip().lower()
+            if "state" in val or "oblast" in val or "область" in val:
+                return "oblast"
+            if "city" in val or "місто" in val or "город" in val:
+                return "city"
+            if "district" in val or "район" in val:
+                return "district"
+    for k in ("regionTypeId", "region_type_id", "typeId", "type_id"):
+        v = item.get(k)
+        if v is None:
+            continue
+        try:
+            val = int(v)
+        except Exception:
+            continue
+        if val == 1:
+            return "oblast"
+        if val == 2:
+            return "city"
+        if val == 3:
+            return "district"
+    for name in (name_ua, name_en):
+        if not name:
+            continue
+        low = name.lower()
+        if "область" in low or "oblast" in low:
+            return "oblast"
+        if "місто" in low or "city" in low:
+            return "city"
+        if "район" in low or "district" in low:
+            return "district"
+    return ""
+
 async def ua_load_regions(client: Optional[httpx.AsyncClient] = None):
-    if REGION_CACHE:
+    global REGION_DATA_LOADED
+    if REGION_DATA_LOADED:
         return
     data = await ua_get_json(UA_ALARM_REGIONS_PATH, client=client)
     items = data if isinstance(data, list) else data.get("regions") or data.get("states") or data.get("data") or []
 
-    def norm(s: str) -> str:
-        s = (s or "").strip().lower()
-        for token in ("область", "обл.", "обл"):
-            s = s.replace(token, "")
-        return " ".join(s.split())
-
-    target = norm(UA_ALARM_OBLAST_NAME)
+    target = _norm_region_name(UA_ALARM_OBLAST_NAME)
     fallback_rid = ""
     fallback_name = ""
-    for it in items:
-        name = it.get("name") or it.get("title") or it.get("regionName") or it.get("regionEngName") or ""
-        rid = it.get("regionId") or it.get("id") or it.get("region_id") or ""
-        if not name or not rid:
-            continue
-        name_norm = norm(name)
-        if name_norm == target:
-            REGION_CACHE["oblast"] = str(rid)
-            return
-        if target and (target in name_norm or name_norm in target):
-            fallback_rid = str(rid)
-            fallback_name = name
 
-    if fallback_rid:
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        rid = _region_id(it)
+        if not rid:
+            continue
+        name_ua = _pick_str(it, ["name", "title", "regionName", "regionUkName", "regionUaName"])
+        name_en = _pick_str(it, ["regionEngName", "regionEnName", "name_en", "title_en"])
+        if not name_ua:
+            name_ua = name_en
+        if not name_en:
+            name_en = name_ua
+        if not name_ua and not name_en:
+            name_ua = rid
+            name_en = rid
+        region_type = _guess_region_type(it, name_ua, name_en)
+        parent_id = _region_parent_id(it)
+
+        REGION_NAME_UA_BY_ID[rid] = name_ua
+        REGION_NAME_EN_BY_ID[rid] = name_en
+        if parent_id:
+            REGION_PARENT_BY_ID[rid] = parent_id
+        if region_type:
+            REGION_TYPE_BY_ID[rid] = region_type
+
+        if not REGION_CACHE.get("oblast") and target:
+            name_norm = _norm_region_name(name_ua or name_en)
+            if name_norm == target:
+                REGION_CACHE["oblast"] = rid
+            elif target in name_norm or name_norm in target:
+                fallback_rid = rid
+                fallback_name = name_ua or name_en
+
+    if not REGION_CACHE.get("oblast") and fallback_rid:
         REGION_CACHE["oblast"] = fallback_rid
         logger.warning("UA alarm region matched by partial name: %s", fallback_name)
-        return
-    if items:
+    if not REGION_CACHE.get("oblast") and items:
         sample = []
         for it in items[:10]:
-            sample.append(it.get("name") or it.get("title") or "")
+            if isinstance(it, dict):
+                sample.append(it.get("name") or it.get("title") or "")
         logger.error("UA alarm region not found. Sample regions: %s", sample)
+    REGION_DATA_LOADED = True
 
 async def ua_region_oblast() -> str:
     await ua_load_regions()
@@ -1135,6 +1216,29 @@ async def ua_region_ids() -> List[str]:
     rid = await ua_region_oblast()
     return [rid]
 
+def region_display_name(user_id: int, rid: str) -> str:
+    if not rid:
+        return ""
+    if get_lang(user_id) == "en":
+        return REGION_NAME_EN_BY_ID.get(rid) or REGION_NAME_UA_BY_ID.get(rid) or rid
+    return REGION_NAME_UA_BY_ID.get(rid) or REGION_NAME_EN_BY_ID.get(rid) or rid
+
+def effective_region_ids(user_id: int) -> List[str]:
+    city_id = ALERT_CITY.get(user_id)
+    if city_id:
+        return [city_id]
+    oblast_id = ALERT_OBLAST.get(user_id)
+    if oblast_id:
+        return [oblast_id]
+    return ALERT_REGION.get(user_id, [])
+
+def sync_alert_regions(user_id: int):
+    rids = effective_region_ids(user_id)
+    if rids:
+        ALERT_REGION[user_id] = rids
+    else:
+        ALERT_REGION.pop(user_id, None)
+
 def region_label_for_message(region_ids: List[str]) -> str:
     if len(region_ids) == 1 and UA_ALARM_OBLAST_NAME:
         return UA_ALARM_OBLAST_NAME
@@ -1158,15 +1262,130 @@ async def fetch_active_region_ids(client: httpx.AsyncClient) -> Optional[Set[str
             ids.add(rid)
     return ids
 
+def region_items_by_type(user_id: int, region_type: str) -> List[tuple[str, str]]:
+    items: List[tuple[str, str]] = []
+    for rid in REGION_NAME_UA_BY_ID.keys():
+        rtype = REGION_TYPE_BY_ID.get(rid) or _guess_region_type({}, REGION_NAME_UA_BY_ID.get(rid, ""), REGION_NAME_EN_BY_ID.get(rid, ""))
+        if rtype == region_type:
+            items.append((rid, region_display_name(user_id, rid)))
+    items.sort(key=lambda x: x[1].lower())
+    return items
+
+def region_items_by_parent(user_id: int, parent_id: str) -> List[tuple[str, str]]:
+    items: List[tuple[str, str]] = []
+    for rid, parent in REGION_PARENT_BY_ID.items():
+        if parent != parent_id:
+            continue
+        items.append((rid, region_display_name(user_id, rid)))
+    items.sort(key=lambda x: x[1].lower())
+    return items
+
+def paginate_items(items: List[tuple[str, str]], page: int) -> tuple[List[tuple[str, str]], int, int]:
+    if not items:
+        return [], 0, 0
+    total_pages = (len(items) + REGIONS_PER_PAGE - 1) // REGIONS_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start = page * REGIONS_PER_PAGE
+    return items[start:start + REGIONS_PER_PAGE], page, total_pages
+
+def regions_list_kb(user_id: int, items: List[tuple[str, str]], page: int, prefix: str, back_cb: str) -> InlineKeyboardMarkup:
+    page_items, page, total_pages = paginate_items(items, page)
+    rows = []
+    for rid, name in page_items:
+        rows.append([InlineKeyboardButton(name, callback_data=f"{prefix}:set:{rid}")])
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️", callback_data=f"{prefix}:page:{page - 1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("➡️", callback_data=f"{prefix}:page:{page + 1}"))
+        if nav:
+            rows.append(nav)
+    back_label = "⬅️ Назад" if get_lang(user_id) == "uk" else "⬅️ Back"
+    rows.append([InlineKeyboardButton(back_label, callback_data=back_cb)])
+    return InlineKeyboardMarkup(rows)
+
+async def fetch_current_alert_state(region_ids: List[str]) -> Optional[bool]:
+    if not region_ids:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            active_ids = await fetch_active_region_ids(client)
+            if active_ids is not None:
+                for rid in region_ids:
+                    ALERT_LAST_STATE[rid] = rid in active_ids
+                return any(rid in active_ids for rid in region_ids)
+            states: List[bool] = []
+            for rid in region_ids:
+                state = await fetch_alert_state(client, rid)
+                if state is None:
+                    continue
+                ALERT_LAST_STATE[rid] = state
+                states.append(state)
+            if not states:
+                return None
+            return any(states)
+    except Exception:
+        logger.exception("alerts status fetch failed for regions %s", region_ids)
+        return None
+
+async def alerts_status_text(user_id: int) -> str:
+    try:
+        await ua_load_regions()
+    except Exception:
+        pass
+    on = ALERTS_ENABLED.get(user_id, False)
+    oblast_id = ALERT_OBLAST.get(user_id, "")
+    city_id = ALERT_CITY.get(user_id, "")
+    oblast_name = region_display_name(user_id, oblast_id) if oblast_id else t(user_id, "не обрано", "not set")
+    city_name = region_display_name(user_id, city_id) if city_id else t(user_id, "не обрано", "not set")
+
+    lines = [
+        t(user_id, "🚨 **Тривоги**", "🚨 **Alerts**"),
+        t(user_id, f"Статус: {'увімкнено' if on else 'вимкнено'}",
+          f"Status: {'enabled' if on else 'disabled'}"),
+        t(user_id, f"Область: {oblast_name}", f"Oblast: {oblast_name}"),
+        t(user_id, f"Місто: {city_name}", f"City: {city_name}"),
+    ]
+
+    region_ids = effective_region_ids(user_id)
+    if region_ids:
+        state = await fetch_current_alert_state(region_ids)
+        if state is True:
+            lines.append(t(user_id, "Поточний стан: 🔴 ТРИВОГА", "Current: 🔴 ALERT"))
+        elif state is False:
+            lines.append(t(user_id, "Поточний стан: 🟢 ВІДБІЙ", "Current: 🟢 ALL CLEAR"))
+        else:
+            lines.append(t(user_id, "Поточний стан: невідомо", "Current: unknown"))
+    return "\n".join(lines)
+
+def alerts_menu_kb(user_id: int) -> InlineKeyboardMarkup:
+    on = ALERTS_ENABLED.get(user_id, False)
+    toggle_label = t(user_id, "🔔 Увімкнути сповіщення", "🔔 Enable alerts")
+    if on:
+        toggle_label = t(user_id, "🔕 Вимкнути сповіщення", "🔕 Disable alerts")
+    rows = [
+        [InlineKeyboardButton(toggle_label, callback_data="alerts:toggle")],
+        [InlineKeyboardButton(t(user_id, "🏙️ Область", "🏙️ Oblast"), callback_data="alerts:oblast:menu")],
+        [InlineKeyboardButton(t(user_id, "🏘️ Місто", "🏘️ City"), callback_data="alerts:city:menu")],
+        [InlineKeyboardButton(t(user_id, "⬅️ Назад", "⬅️ Back"), callback_data="menu:back")],
+    ]
+    return InlineKeyboardMarkup(rows)
 async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
     if not ua_alarm_enabled():
         return
 
-    subs = [uid for uid, on in ALERTS_ENABLED.items() if on and ALERT_REGION.get(uid)]
-    if not subs:
+    user_regions: Dict[int, List[str]] = {}
+    for uid, on in ALERTS_ENABLED.items():
+        if not on:
+            continue
+        rids = effective_region_ids(uid)
+        if rids:
+            user_regions[uid] = rids
+    if not user_regions:
         return
 
-    region_ids = sorted({rid for uid in subs for rid in ALERT_REGION.get(uid, [])})
+    region_ids = sorted({rid for rids in user_regions.values() for rid in rids})
 
     async with httpx.AsyncClient(timeout=20) as client:
         active_ids = await fetch_active_region_ids(client)
@@ -1186,8 +1405,8 @@ async def alerts_job(context: ContextTypes.DEFAULT_TYPE):
                     msg_uk = "🔴 ТРИВОГА" if is_alert else "🟢 ВІДБІЙ"
                     msg_en = "🔴 ALERT" if is_alert else "🟢 ALL CLEAR"
 
-                    for uid in subs:
-                        if rid in ALERT_REGION.get(uid, []):
+                    for uid, rids in user_regions.items():
+                        if rid in rids:
                             try:
                                 await context.bot.send_message(chat_id=uid, text=t(uid, msg_uk, msg_en))
                             except Exception:
@@ -1553,7 +1772,7 @@ async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 # =========================
-# Menu callback handler (only menu/info/toggles)
+# Menu callback handler (menu/info/news)
 # =========================
 async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1596,48 +1815,6 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(C(uid, "rules"), parse_mode=ParseMode.MARKDOWN)
         return
 
-    if data == "alerts:toggle":
-        if not ua_alarm_enabled():
-            await q.message.reply_text(C(uid, "alerts_no_key"))
-            return
-
-        on = ALERTS_ENABLED.get(uid, False)
-        if on:
-            ALERTS_ENABLED[uid] = False
-            await q.message.reply_text(t(uid, "✅ Тривоги вимкнено.", "✅ Alerts disabled."))
-        else:
-            try:
-                rids = await ua_region_ids()
-            except Exception:
-                await q.message.reply_text(
-                    t(uid, "⚠️ Не вдалося увімкнути тривоги (помилка конфігурації/API).",
-                       "⚠️ Could not enable alerts (config/API error).")
-                )
-                return
-            ALERT_REGION[uid] = rids
-            ALERTS_ENABLED[uid] = True
-            label = region_label_for_message(rids)
-            if label:
-                await q.message.reply_text(
-                    t(uid, f"✅ Тривоги увімкнено ({label}).", f"✅ Alerts enabled ({label}).")
-                )
-            else:
-                await q.message.reply_text(t(uid, "✅ Тривоги увімкнено.", "✅ Alerts enabled."))
-            try:
-                async with httpx.AsyncClient(timeout=20) as client:
-                    active_ids = await fetch_active_region_ids(client)
-                if active_ids is None:
-                    active_ids = set()
-                any_alert = any(rid in active_ids for rid in rids)
-                for rid in rids:
-                    ALERT_LAST_STATE[rid] = rid in active_ids
-                msg_uk = "🔴 ТРИВОГА" if any_alert else "🟢 ВІДБІЙ"
-                msg_en = "🔴 ALERT" if any_alert else "🟢 ALL CLEAR"
-                await q.message.reply_text(t(uid, msg_uk, msg_en))
-            except Exception:
-                logger.exception("alerts status fetch failed for regions %s", rids)
-        return
-
     if data == "news:test":
         if not news_config_ok():
             await q.message.reply_text(C(uid, "news_not_cfg"))
@@ -1646,6 +1823,155 @@ async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t(uid, "✅ News job активний. Чекайте публікацій у каналі.", "✅ News job active. Watch the channel.")
         )
         return
+
+# =========================
+# Alerts callbacks
+# =========================
+async def alerts_show_menu(q, uid: int):
+    if not ua_alarm_enabled():
+        await q.message.reply_text(C(uid, "alerts_no_key"))
+        return
+    txt = await alerts_status_text(uid)
+    await q.message.reply_text(txt, parse_mode=ParseMode.MARKDOWN, reply_markup=alerts_menu_kb(uid))
+
+async def alerts_oblast_menu(q, uid: int, page: int = 0):
+    if not ua_alarm_enabled():
+        await q.message.reply_text(C(uid, "alerts_no_key"))
+        return
+    try:
+        await ua_load_regions()
+    except Exception:
+        await q.message.reply_text(t(uid, "❌ Не вдалося отримати список областей.", "❌ Failed to fetch oblasts."))
+        return
+    items = region_items_by_type(uid, "oblast")
+    if not items:
+        fallback: List[tuple[str, str]] = []
+        for rid in REGION_NAME_UA_BY_ID.keys():
+            name = (REGION_NAME_UA_BY_ID.get(rid, "") + " " + REGION_NAME_EN_BY_ID.get(rid, "")).lower()
+            if "область" in name or "oblast" in name:
+                fallback.append((rid, region_display_name(uid, rid)))
+        fallback.sort(key=lambda x: x[1].lower())
+        items = fallback
+    if not items:
+        await q.message.reply_text(t(uid, "❌ Не знайдено областей.", "❌ No oblasts found."))
+        return
+    kb = regions_list_kb(uid, items, page, "alerts:oblast", "alerts:menu")
+    await q.message.reply_text(t(uid, "Оберіть область:", "Choose an oblast:"), reply_markup=kb)
+
+async def alerts_city_menu(q, uid: int, page: int = 0):
+    if not ua_alarm_enabled():
+        await q.message.reply_text(C(uid, "alerts_no_key"))
+        return
+    oblast_id = ALERT_OBLAST.get(uid)
+    if not oblast_id:
+        await q.message.reply_text(t(uid, "Спочатку оберіть область.", "Choose an oblast first."))
+        await alerts_oblast_menu(q, uid, 0)
+        return
+    try:
+        await ua_load_regions()
+    except Exception:
+        await q.message.reply_text(t(uid, "❌ Не вдалося отримати список міст.", "❌ Failed to fetch cities."))
+        return
+    items = region_items_by_parent(uid, oblast_id)
+    if items:
+        filtered = []
+        for rid, name in items:
+            rtype = REGION_TYPE_BY_ID.get(rid) or _guess_region_type({}, REGION_NAME_UA_BY_ID.get(rid, ""), REGION_NAME_EN_BY_ID.get(rid, ""))
+            if rtype in ("city", "district", ""):
+                filtered.append((rid, name))
+        if filtered:
+            items = filtered
+    if not items:
+        ALERT_REGION[uid] = [oblast_id]
+        await q.message.reply_text(
+            t(uid, "ℹ️ Для цієї області міст не знайдено. Використовую область.",
+              "ℹ️ No cities found for this oblast. Using oblast.")
+        )
+        await alerts_show_menu(q, uid)
+        return
+    kb = regions_list_kb(uid, items, page, "alerts:city", "alerts:menu")
+    await q.message.reply_text(t(uid, "Оберіть місто:", "Choose a city:"), reply_markup=kb)
+
+async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    data = q.data
+
+    if data == "alerts:menu":
+        await alerts_show_menu(q, uid)
+        return
+
+    if data == "alerts:toggle":
+        if not ua_alarm_enabled():
+            await q.message.reply_text(C(uid, "alerts_no_key"))
+            return
+        on = ALERTS_ENABLED.get(uid, False)
+        if on:
+            ALERTS_ENABLED[uid] = False
+            await q.message.reply_text(t(uid, "✅ Сповіщення вимкнено.", "✅ Alerts disabled."))
+            await alerts_show_menu(q, uid)
+            return
+        ALERTS_ENABLED[uid] = True
+        await q.message.reply_text(t(uid, "✅ Сповіщення увімкнено.", "✅ Alerts enabled."))
+        if not ALERT_OBLAST.get(uid):
+            await alerts_oblast_menu(q, uid, 0)
+            return
+        if not ALERT_CITY.get(uid):
+            await alerts_city_menu(q, uid, 0)
+            return
+        sync_alert_regions(uid)
+        await alerts_show_menu(q, uid)
+        return
+
+    if data.startswith("alerts:oblast:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        action = parts[2]
+        if action == "menu":
+            await alerts_oblast_menu(q, uid, 0)
+            return
+        if action == "page" and len(parts) == 4:
+            try:
+                page = int(parts[3])
+            except Exception:
+                page = 0
+            await alerts_oblast_menu(q, uid, page)
+            return
+        if action == "set" and len(parts) == 4:
+            rid = parts[3]
+            ALERT_OBLAST[uid] = rid
+            ALERT_CITY.pop(uid, None)
+            sync_alert_regions(uid)
+            name = region_display_name(uid, rid) or rid
+            await q.message.reply_text(t(uid, f"✅ Область встановлено: {name}.", f"✅ Oblast set: {name}."))
+            await alerts_city_menu(q, uid, 0)
+            return
+
+    if data.startswith("alerts:city:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        action = parts[2]
+        if action == "menu":
+            await alerts_city_menu(q, uid, 0)
+            return
+        if action == "page" and len(parts) == 4:
+            try:
+                page = int(parts[3])
+            except Exception:
+                page = 0
+            await alerts_city_menu(q, uid, page)
+            return
+        if action == "set" and len(parts) == 4:
+            rid = parts[3]
+            ALERT_CITY[uid] = rid
+            sync_alert_regions(uid)
+            name = region_display_name(uid, rid) or rid
+            await q.message.reply_text(t(uid, f"✅ Місто встановлено: {name}.", f"✅ City set: {name}."))
+            await alerts_show_menu(q, uid)
+            return
 
 # =========================
 # Product callbacks
@@ -1885,8 +2211,10 @@ def main():
     # menu/info callbacks only
     app.add_handler(CallbackQueryHandler(
         menu_cb,
-        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:products|products:menu|info:system|info:gear|info:rules|alerts:toggle|news:test)$"
+        pattern=r"^(lang:menu|lang:set:(uk|en)|menu:back|info:company|info:products|products:menu|info:system|info:gear|info:rules|news:test)$"
     ))
+
+    app.add_handler(CallbackQueryHandler(alerts_cb, pattern=r"^alerts:"))
 
     app.add_handler(CallbackQueryHandler(product_cb, pattern=r"^prod:"))
 
