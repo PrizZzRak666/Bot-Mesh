@@ -4,6 +4,7 @@ import secrets
 import asyncio
 import logging
 import json
+import random
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
@@ -195,27 +196,64 @@ CONTENT = {
         ),
         "products_not_found": "⚠️ Продукт не знайдено.",
         "system": (
-            "📡 **Як працює система (загально)**\n\n"
-            "Автономний канал обміну короткими повідомленнями для ситуацій, коли немає світла/інтернету/мобільного звʼязку.\n"
-            "Технічні параметри, ключі та інструкції підключення публічно не розкриваються.\n"
+            "📡 **Як працює система (Meshtastic)**\n\n"
+            "Це автономна mesh-мережа на портативних вузлах, де кожен вузол може ретранслювати повідомлення далі.\n"
+            "Система працює без інтернету й мобільного звʼязку, з низьким енергоспоживанням та короткими повідомленнями.\n\n"
+            "Навіщо потрібна:\n"
+            "• резервний звʼязок під час відключень і перевантажень мереж\n"
+            "• координація в польових/кризових умовах\n"
+            "• стійкість до втрати окремих вузлів (мережа самовідновлюється)\n\n"
+            "Безпека:\n"
+            "• повідомлення захищені шифруванням\n"
+            "• обмін без публікації технічних ключів чи налаштувань\n\n"
+            "💙 Проєкт безкоштовний для користувачів і фінансується як волонтерська ініціатива.\n\n"
+            "Публічно не розкриваємо технічні параметри й інструкції підключення.\n"
             "Підключення — лише після підтвердження."
         ),
         "gear": (
             "📦 **Обладнання**\n\n"
-            "Потрібен окремий автономний портативний пристрій із вбудованою батареєю.\n"
-            "Телефон — лише для налаштування.\n\n"
-            "Поширені варіанти:\n"
-            "• ThinkNode M2\n• LILYGO T-Echo\n• Heltec Mesh Node (готовий)"
+            "Потрібен сумісний пристрій Meshtastic (портативний вузол), джерело живлення та клієнт для керування.\n\n"
+            "Необхідне:\n"
+            "• сумісний вузол Meshtastic (готовий девайс або модуль)\n"
+            "• зарядка/кабель та батарея\n"
+            "• телефон або ПК для роботи з клієнтом (iOS/Android/Web)\n\n"
+            "Поширені лінійки з офіційного списку:\n"
+            "• RAK (WisBlock/WisMesh)\n"
+            "• LILYGO (T-Echo, T-Beam, T-Deck)\n"
+            "• HELTEC (Mesh Node, LoRa 32)\n"
+            "• Seeed Studio (SenseCAP, Wio)\n"
+            "• Elecrow (ThinkNode)\n"
+            "• B&Q Consulting (Nano/Station)\n"
+            "• muzi works (R1 Neo)\n"
+            "• Raspberry Pi (Linux native)\n\n"
+            "Опційно:\n"
+            "• зовнішня антена\n"
+            "• запасна батарея/повербанк або сонячне живлення\n"
+            "• GPS (за потреби)\n\n"
+            "Офіційний список: https://meshtastic.org/docs/hardware/devices/\n"
+            "Технічні параметри та інструкції підключення публічно не розкриваємо."
         ),
         "rules": (
             "📜 **Правила**\n\n"
             "• Лише екстрені/резервні сценарії\n"
-            "• Без спаму\n"
-            "• Не передавати доступ іншим\n"
-            "• Використання лише за призначенням\n"
+            "• Дотримуйтесь законів і вимог адміністраторів\n"
+            "• Без спаму, реклами та дезінформації\n"
+            "• Не передавати доступ третім особам\n"
+            "• Не публікувати технічні параметри, ключі чи інструкції\n"
+            "• Поважайте приватність інших користувачів\n"
+            "• Не здійснюйте дій, що можуть порушити роботу мережі\n\n"
+            "Посилання на закони України:\n"
+            "• «Про електронні комунікації»: https://zakon.rada.gov.ua/laws/show/1089-IX#Text\n"
+            "• «Про інформацію»: https://zakon.rada.gov.ua/laws/show/2657-12#Text\n"
+            "• «Про захист персональних даних»: https://zakon.rada.gov.ua/laws/show/2297-17#Text\n"
             "Порушення → відключення."
         ),
-        "faq_hint": "💬 **Питання (AI)**\n\nНапишіть питання одним повідомленням.",
+        "faq_hint": (
+            "💬 **Питання та відповіді**\n\n"
+            "Напиши своє питання — як людині 😊\n"
+            "Якщо потрібно, додай один рядок контексту.\n"
+            "Відповім коротко і без технічних деталей."
+        ),
         "apply_intro": "🟢 **ЗАПИТ НА ДОСТУП**\n\nДля чого вам доступ? (1 рядок)",
         "ask_device": "📦 Який пристрій? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Підтвердіть правила. Напишіть: **ПІДТВЕРДЖУЮ**",
@@ -261,25 +299,64 @@ CONTENT = {
         ),
         "products_not_found": "⚠️ Product not found.",
         "system": (
-            "📡 **How it works (high level)**\n\n"
-            "An autonomous short-message channel designed for power/internet/mobile outages.\n"
+            "📡 **How it works (Meshtastic)**\n\n"
+            "An autonomous mesh network of portable nodes where each node can relay messages.\n"
+            "It works without internet or cellular coverage, optimized for low power and short messages.\n\n"
+            "Why it matters:\n"
+            "• backup communications during outages and network congestion\n"
+            "• coordination in field or crisis conditions\n"
+            "• resilient topology that self-heals if some nodes drop\n\n"
+            "Security:\n"
+            "• messages are protected with encryption\n"
+            "• no public disclosure of technical keys or settings\n\n"
+            "💙 The project is free for users and funded as a volunteer initiative.\n\n"
             "Technical parameters and onboarding steps are not published.\n"
             "Access is provided after verification."
         ),
         "gear": (
             "📦 **Equipment**\n\n"
-            "Standalone portable device with built-in battery. Phone is only for setup.\n"
-            "Common options: ThinkNode M2 / T-Echo / Heltec."
+            "You need a Meshtastic-compatible device (portable node), power, and a client to manage it.\n\n"
+            "Required:\n"
+            "• a Meshtastic-compatible node (ready-made device or module)\n"
+            "• charging cable and battery\n"
+            "• phone or PC client (iOS/Android/Web)\n\n"
+            "Common device families from the official list:\n"
+            "• RAK (WisBlock/WisMesh)\n"
+            "• LILYGO (T-Echo, T-Beam, T-Deck)\n"
+            "• HELTEC (Mesh Node, LoRa 32)\n"
+            "• Seeed Studio (SenseCAP, Wio)\n"
+            "• Elecrow (ThinkNode)\n"
+            "• B&Q Consulting (Nano/Station)\n"
+            "• muzi works (R1 Neo)\n"
+            "• Raspberry Pi (Linux native)\n\n"
+            "Optional:\n"
+            "• external antenna\n"
+            "• spare battery/power bank or solar\n"
+            "• GPS (if needed)\n\n"
+            "Official list: https://meshtastic.org/docs/hardware/devices/\n"
+            "Technical parameters and onboarding instructions are not published."
         ),
         "rules": (
             "📜 **Rules**\n\n"
             "• Emergency/reserve scenarios only\n"
-            "• No spam\n"
-            "• Do not share access\n"
-            "• Intended use only\n"
+            "• Follow laws and admin guidance\n"
+            "• No spam, ads, or disinformation\n"
+            "• Do not share access with others\n"
+            "• Do not publish technical parameters, keys, or instructions\n"
+            "• Respect other users' privacy\n"
+            "• Do not take actions that may disrupt the network\n\n"
+            "Ukrainian legal references:\n"
+            "• “On Electronic Communications”: https://zakon.rada.gov.ua/laws/show/1089-IX#Text\n"
+            "• “On Information”: https://zakon.rada.gov.ua/laws/show/2657-12#Text\n"
+            "• “On Personal Data Protection”: https://zakon.rada.gov.ua/laws/show/2297-17#Text\n"
             "Violations → removal."
         ),
-        "faq_hint": "💬 **Questions (AI)**\n\nSend one message.",
+        "faq_hint": (
+            "💬 **Questions & Answers**\n\n"
+            "Just ask your question — human to human 😊\n"
+            "If needed, add one short line of context.\n"
+            "I’ll answer briefly and without technical details."
+        ),
         "apply_intro": "🟢 **ACCESS REQUEST**\n\nPurpose? (one short line)",
         "ask_device": "📦 Which device? (ThinkNode M2 / T-Echo / Heltec)",
         "confirm": "✅ Confirm rules. Type: **CONFIRM**",
@@ -301,6 +378,66 @@ CONTENT = {
 
 def C(user_id: int, key: str) -> str:
     return CONTENT[get_lang(user_id)][key]
+
+# =========================
+# Greetings
+# =========================
+GREETINGS = {
+    "uk": {
+        "plain": [
+            "👋 Вітаємо в офіційному боті УкрАвіаКосТех.",
+            "Привіт! Це бот УкрАвіаКосТех — ваш канал для інформації та запитів.",
+            "👋 Ласкаво просимо до УкрАвіаКосТех.",
+            "Вітаємо! УкрАвіаКосТех на зв’язку.",
+            "👋 Дякуємо, що з нами. Це офіційний бот УкрАвіаКосТех.",
+        ],
+        "named": [
+            "👋 Вітаємо, {name}, в офіційному боті УкрАвіаКосТех.",
+            "Привіт, {name}! Це бот УкрАвіаКосТех — ваш канал для інформації та запитів.",
+            "👋 Ласкаво просимо, {name}, до УкрАвіаКосТех.",
+            "Вітаємо, {name}! УкрАвіаКосТех на зв’язку.",
+            "👋 Дякуємо, що з нами, {name}. Це офіційний бот УкрАвіаКосТех.",
+        ],
+    },
+    "en": {
+        "plain": [
+            "👋 Welcome to the official UkrAviaKosTech bot.",
+            "Hi! This is the UkrAviaKosTech bot — your channel for info and requests.",
+            "👋 Welcome to UkrAviaKosTech.",
+            "Hello! UkrAviaKosTech is here.",
+            "👋 Thanks for joining. This is the official UkrAviaKosTech bot.",
+        ],
+        "named": [
+            "👋 Welcome, {name}, to the official UkrAviaKosTech bot.",
+            "Hi, {name}! This is the UkrAviaKosTech bot — your channel for info and requests.",
+            "👋 Welcome to UkrAviaKosTech, {name}.",
+            "Hello, {name}! UkrAviaKosTech is here.",
+            "👋 Thanks for joining, {name}. This is the official UkrAviaKosTech bot.",
+        ],
+    },
+}
+
+def display_name(user) -> str:
+    if not user:
+        return ""
+    name = (user.first_name or "").strip()
+    if not name and user.username:
+        name = f"@{user.username}"
+    name = " ".join(name.split())
+    if len(name) > 40:
+        name = name[:40].rstrip()
+    # Escape braces to avoid .format() errors in greeting templates.
+    name = name.replace("{", "{{").replace("}", "}}")
+    return name
+
+def greeting_text(user_id: int, name: str) -> str:
+    lang = get_lang(user_id)
+    group = GREETINGS.get(lang) or GREETINGS.get("uk") or {}
+    pool = group.get("named") if name else group.get("plain")
+    if not pool:
+        return t(user_id, "👋 Вітаю!", "👋 Hello!")
+    template = random.choice(pool)
+    return template.format(name=name) if name else template
 
 # =========================
 # Menu UI
@@ -764,8 +901,8 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📡 Як працює", callback_data="info:system")],
             [InlineKeyboardButton("📦 Обладнання", callback_data="info:gear"),
              InlineKeyboardButton("📜 Правила", callback_data="info:rules")],
-            [InlineKeyboardButton("💬 Питання (AI)", callback_data="faq:start")],
-            [InlineKeyboardButton("🚨 Тривоги On/Off", callback_data="alerts:toggle")],
+            [InlineKeyboardButton("💬 Питання та відповіді", callback_data="faq:start")],
+            [InlineKeyboardButton("🚨 Тривоги у регіоні On/Off", callback_data="alerts:toggle")],
             [InlineKeyboardButton("📰 Новини → канал (тест)", callback_data="news:test")],
             [InlineKeyboardButton("🌐 Мова / Language", callback_data="lang:menu")],
         ])
@@ -776,8 +913,8 @@ def menu_kb(user_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📡 How it works", callback_data="info:system")],
         [InlineKeyboardButton("📦 Equipment", callback_data="info:gear"),
          InlineKeyboardButton("📜 Rules", callback_data="info:rules")],
-        [InlineKeyboardButton("💬 Questions (AI)", callback_data="faq:start")],
-        [InlineKeyboardButton("🚨 Alerts On/Off", callback_data="alerts:toggle")],
+        [InlineKeyboardButton("💬 Questions & Answers", callback_data="faq:start")],
+        [InlineKeyboardButton("🚨 Regional Air Alerts On/Off", callback_data="alerts:toggle")],
         [InlineKeyboardButton("📰 News → channel (test)", callback_data="news:test")],
         [InlineKeyboardButton("🌐 Language", callback_data="lang:menu")],
     ])
@@ -1333,8 +1470,10 @@ ASK_PURPOSE, ASK_DEVICE, ASK_CONFIRM, ASK_FAQ = range(4)
 # =========================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    name = display_name(update.effective_user)
+    greet = greeting_text(uid, name)
     await update.message.reply_text(
-        t(uid, f"👋 Вітаю!\n\n{C(uid,'menu')}", f"👋 Hello!\n\n{C(uid,'menu')}"),
+        f"{greet}\n\n{C(uid,'menu')}",
         reply_markup=menu_kb(uid),
     )
 
