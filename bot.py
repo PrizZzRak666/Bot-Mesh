@@ -1637,6 +1637,13 @@ NEWS_INTEREST_KEYWORDS = [k.strip() for k in env("NEWS_INTEREST_KEYWORDS", "").s
 NEWS_INTEREST_BOOST = env_int("NEWS_INTEREST_BOOST", 2)
 NEWS_RECENCY_BOOST = env_int("NEWS_RECENCY_BOOST", 6)
 NEWS_BLAST_KEYWORDS = [k.strip() for k in env("NEWS_BLAST_KEYWORDS", "вибух,вибухи").split(",") if k.strip()]
+NEWS_BLAST_CONTEXT_KEYWORDS = [
+    k.strip() for k in env(
+        "NEWS_BLAST_CONTEXT_KEYWORDS",
+        "атака,атаки,удар,удари,обстріл,обстрел,ракета,ракети,ракеты,дрон,дрони,дроны,"
+        "ППО,ПВО,тривога,тревога,відбій,отбой,приліт,прилет"
+    ).split(",") if k.strip()
+]
 _seen_links: Set[str] = set()
 _seen_order: deque[str] = deque()
 _feed_redirects: Dict[str, str] = {}
@@ -1650,7 +1657,6 @@ NEWS_SUMMARY_TZ = env("NEWS_SUMMARY_TZ", "Europe/Kyiv")
 NEWS_SUMMARY_LOOKBACK_HOURS = env_int("NEWS_SUMMARY_LOOKBACK_HOURS", 8)
 NEWS_SUMMARY_MAX_ITEMS = env_int("NEWS_SUMMARY_MAX_ITEMS", 12)
 NEWS_SUMMARY_SEEN_MAX = env_int("NEWS_SUMMARY_SEEN_MAX", 2000)
-NEWS_SUMMARY_SEND_TO_USERS = env_bool("NEWS_SUMMARY_SEND_TO_USERS", True)
 NEWS_SUMMARY_SEND_TO_CHANNEL = env_bool("NEWS_SUMMARY_SEND_TO_CHANNEL", True)
 NEWS_SUMMARY_CHANNEL_LINK = env("NEWS_SUMMARY_CHANNEL_LINK", "")
 
@@ -1759,12 +1765,21 @@ def _interest_hits(text: str) -> int:
                 hits += 1
     return hits
 
-def _blast_hits(text: str) -> bool:
-    text = (text or "").lower()
-    for kw in NEWS_BLAST_KEYWORDS:
+def _text_has_any(text: str, keywords: List[str]) -> bool:
+    for kw in keywords:
         if kw.lower() in text:
             return True
     return False
+
+def _blast_hits(text: str) -> bool:
+    text = (text or "").lower()
+    if not text:
+        return False
+    if not _text_has_any(text, NEWS_BLAST_KEYWORDS):
+        return False
+    if not NEWS_BLAST_CONTEXT_KEYWORDS:
+        return True
+    return _text_has_any(text, NEWS_BLAST_CONTEXT_KEYWORDS)
 
 def urgent_by_keywords(title: str, summary: str) -> bool:
     title_hits = keyword_hits(title)
@@ -2570,26 +2585,6 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
             delivered = True
         except Exception:
             logger.exception("Summary post failed")
-    if NEWS_SUMMARY_SEND_TO_USERS and KNOWN_USERS:
-        for uid in list(KNOWN_USERS):
-            try:
-                if image_bytes:
-                    await context.bot.send_photo(
-                        chat_id=uid,
-                        photo=InputFile(io.BytesIO(image_bytes), filename="digest.png"),
-                        caption="🗞️ Зведення новин України",
-                    )
-                await context.bot.send_message(
-                    chat_id=uid,
-                    text=_append_footer(text, uid),
-                    disable_web_page_preview=True,
-                )
-                delivered = True
-            except Forbidden:
-                KNOWN_USERS.discard(uid)
-                _save_known_users()
-            except Exception:
-                logger.exception("Summary DM failed for %s", uid)
     if delivered and links:
         _mark_summary_links(links)
 
