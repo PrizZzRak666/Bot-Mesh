@@ -15,6 +15,7 @@ from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import feedparser
@@ -1702,17 +1703,49 @@ def news_images_enabled() -> bool:
     return ai_enabled()
 
 def remember_link(link: str):
-    if link in _seen_links:
+    link_key = normalize_link(link)
+    if not link_key:
         return
-    _seen_links.add(link)
-    _seen_order.append(link)
+    if link_key in _seen_links:
+        return
+    _seen_links.add(link_key)
+    _seen_order.append(link_key)
     while len(_seen_order) > NEWS_SEEN_MAX:
         old = _seen_order.popleft()
         _seen_links.discard(old)
     _save_news_seen()
 
 def normalize_title(title: str) -> str:
-    return " ".join((title or "").lower().split())
+    text = re.sub(r"[^\w]+", " ", (title or "").lower())
+    return " ".join(text.split())
+
+_TRACKING_QUERY_KEYS = {
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "utm_name",
+    "gclid",
+    "fbclid",
+    "yclid",
+    "igshid",
+    "ref",
+    "source",
+}
+
+def normalize_link(link: str) -> str:
+    link = (link or "").strip()
+    if not link:
+        return ""
+    try:
+        parts = urlsplit(link)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        filtered = [(k, v) for k, v in query if k.lower() not in _TRACKING_QUERY_KEYS]
+        new_query = urlencode(filtered, doseq=True)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, ""))
+    except Exception:
+        return link
 
 NEWS_SEEN_FILE = Path("data/news_seen.json")
 
@@ -1728,10 +1761,13 @@ def _load_news_seen() -> None:
     titles = data.get("titles") if isinstance(data, dict) else None
     if isinstance(links, list):
         for link in links:
-            if not isinstance(link, str) or link in _seen_links:
+            if not isinstance(link, str):
                 continue
-            _seen_links.add(link)
-            _seen_order.append(link)
+            link_key = normalize_link(link)
+            if not link_key or link_key in _seen_links:
+                continue
+            _seen_links.add(link_key)
+            _seen_order.append(link_key)
     if isinstance(titles, list):
         for title in titles:
             if not isinstance(title, str) or title in _seen_titles:
@@ -2383,6 +2419,8 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
 
     urgent_items: List[Dict[str, object]] = []
     candidates: List[Dict[str, object]] = []
+    run_seen_links: Set[str] = set()
+    run_seen_titles: Set[str] = set()
 
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
@@ -2394,10 +2432,11 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     link = getattr(entry, "link", "") or ""
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
                     title_norm = normalize_title(title)
+                    link_key = normalize_link(link)
 
-                    if not link or link in _seen_links:
+                    if not link_key or link_key in _seen_links or link_key in run_seen_links:
                         continue
-                    if not title_norm or title_norm in _seen_titles:
+                    if not title_norm or title_norm in _seen_titles or title_norm in run_seen_titles:
                         continue
 
                     published = _entry_datetime(entry)
@@ -2420,6 +2459,8 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         if NEWS_MAX_AGE_HOURS > 0 and age_hours > NEWS_MAX_AGE_HOURS:
                             continue
                         candidates.append(item)
+                    run_seen_links.add(link_key)
+                    run_seen_titles.add(title_norm)
             except Exception:
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
