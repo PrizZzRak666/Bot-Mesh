@@ -1628,6 +1628,12 @@ NEWS_MIN_KEYWORDS = env_int("NEWS_MIN_KEYWORDS", 2)
 NEWS_REQUIRE_TITLE_KEYWORD = env_bool("NEWS_REQUIRE_TITLE_KEYWORD", True)
 NEWS_MAX_POSTS_PER_RUN = env_int("NEWS_MAX_POSTS_PER_RUN", 3)
 NEWS_MAX_POSTS_PER_HOUR = env_int("NEWS_MAX_POSTS_PER_HOUR", 12)
+NEWS_AI_MAX_CANDIDATES = env_int("NEWS_AI_MAX_CANDIDATES", 30)
+NEWS_MAX_AGE_HOURS = env_int("NEWS_MAX_AGE_HOURS", 24)
+NEWS_INTEREST_KEYWORDS = [k.strip() for k in env("NEWS_INTEREST_KEYWORDS", "").split(",") if k.strip()]
+NEWS_INTEREST_BOOST = env_int("NEWS_INTEREST_BOOST", 2)
+NEWS_RECENCY_BOOST = env_int("NEWS_RECENCY_BOOST", 6)
+NEWS_BLAST_KEYWORDS = [k.strip() for k in env("NEWS_BLAST_KEYWORDS", "вибух,вибухи").split(",") if k.strip()]
 _seen_links: Set[str] = set()
 _seen_order: deque[str] = deque()
 _feed_redirects: Dict[str, str] = {}
@@ -1664,9 +1670,46 @@ def remember_link(link: str):
     while len(_seen_order) > NEWS_SEEN_MAX:
         old = _seen_order.popleft()
         _seen_links.discard(old)
+    _save_news_seen()
 
 def normalize_title(title: str) -> str:
     return " ".join((title or "").lower().split())
+
+NEWS_SEEN_FILE = Path("data/news_seen.json")
+
+def _load_news_seen() -> None:
+    if not NEWS_SEEN_FILE.exists():
+        return
+    try:
+        data = json.loads(NEWS_SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load news seen list")
+        return
+    links = data.get("links") if isinstance(data, dict) else None
+    titles = data.get("titles") if isinstance(data, dict) else None
+    if isinstance(links, list):
+        for link in links:
+            if not isinstance(link, str) or link in _seen_links:
+                continue
+            _seen_links.add(link)
+            _seen_order.append(link)
+    if isinstance(titles, list):
+        for title in titles:
+            if not isinstance(title, str) or title in _seen_titles:
+                continue
+            _seen_titles.add(title)
+            _seen_titles_order.append(title)
+
+def _save_news_seen() -> None:
+    try:
+        NEWS_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "links": list(_seen_order),
+            "titles": list(_seen_titles_order),
+        }
+        NEWS_SEEN_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save news seen list")
 
 def remember_title(title: str):
     if title in _seen_titles:
@@ -1676,6 +1719,9 @@ def remember_title(title: str):
     while len(_seen_titles_order) > NEWS_SEEN_MAX:
         old = _seen_titles_order.popleft()
         _seen_titles.discard(old)
+    _save_news_seen()
+
+_load_news_seen()
 
 def news_config_ok() -> bool:
     if not (NEWS_ENABLED and bool(NEWS_CHANNEL_ID) and RSS_FEEDS):
@@ -1695,6 +1741,27 @@ def keyword_hits(text: str) -> int:
         if kw.lower() in text:
             hits += 1
     return hits
+
+def _interest_hits(text: str) -> int:
+    text = (text or "").lower()
+    if not text:
+        return 0
+    hits = 0
+    for kw in NEWS_INTEREST_KEYWORDS:
+        if kw.lower() in text:
+            hits += 1
+    if NEWS_USE_KEYWORDS and not NEWS_INTEREST_KEYWORDS:
+        for kw in URGENT_KEYWORDS:
+            if kw.lower() in text:
+                hits += 1
+    return hits
+
+def _blast_hits(text: str) -> bool:
+    text = (text or "").lower()
+    for kw in NEWS_BLAST_KEYWORDS:
+        if kw.lower() in text:
+            return True
+    return False
 
 def urgent_by_keywords(title: str, summary: str) -> bool:
     title_hits = keyword_hits(title)
@@ -1794,12 +1861,12 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
     max_score = NEWS_AI_SCORE_SCALE if NEWS_AI_SCORE_SCALE > 0 else 5
     instructions = (
         "You are a news triage assistant.\n"
-        "Rate criticality and importance on a 0-"
+        "Rate criticality and public resonance on a 0-"
         f"{max_score} scale using integers.\n"
         "Return ONLY a JSON object: "
         "{\"criticality\":0,\"importance\":0}\n"
         "criticality: immediate harm/emergency risk.\n"
-        "importance: broad impact/relevance/scale.\n"
+        "importance: public resonance, broad impact, relevance.\n"
         "No extra text."
     )
     try:
@@ -1828,6 +1895,35 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
             _ai_disable_temporarily("rate limit or quota")
         logger.exception("News AI scoring failed")
         return None
+
+async def ai_news_bullets(title: str, summary: str) -> str:
+    if not ai_enabled():
+        return ""
+    safe_title = (title or "").strip()[:300]
+    safe_summary = (summary or "").strip()[:NEWS_SUMMARY_MAX_CHARS]
+    instructions = (
+        "Склади 3–5 коротких тез українською.\n"
+        "Формат: кожен рядок починається з '• '.\n"
+        "Без паніки, без вигадок, без прямих закликів.\n"
+        "Не використовуй емодзі."
+    )
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.responses.create,
+                model=AI_MODEL,
+                instructions=instructions,
+                input=f"{safe_title}\n{safe_summary}",
+            ),
+            timeout=NEWS_AI_TIMEOUT_SEC,
+        )
+        out = (getattr(resp, "output_text", "") or "").strip()
+        return out
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("News AI bullets failed")
+        return ""
 
 def news_rate_ok() -> bool:
     if NEWS_MAX_POSTS_PER_HOUR <= 0:
@@ -2128,100 +2224,212 @@ async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
         r.raise_for_status()
     return r.text
 
+def _news_age_hours(published: Optional[datetime]) -> float:
+    if not published:
+        return 0.0
+    now = datetime.now(timezone.utc)
+    delta = now - published
+    return max(0.0, delta.total_seconds() / 3600.0)
+
+def _fallback_bullets(summary: str) -> str:
+    summary = _clean_html(summary or "")
+    if not summary:
+        return "• Немає короткого опису у джерелі."
+    parts = re.split(r"[.!?]+", summary)
+    lines = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lines.append(f"• {part}")
+        if len(lines) >= 4:
+            break
+    return "\n".join(lines) if lines else "• Деталі у джерелі."
+
+def _normalize_bullets(text: str) -> str:
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    if not lines:
+        return ""
+    bullets: List[str] = []
+    for line in lines:
+        if line.startswith("•"):
+            bullets.append(line)
+        else:
+            bullets.append("• " + line.lstrip("-•* ").strip())
+        if len(bullets) >= 5:
+            break
+    return "\n".join(bullets)
+
+def _news_header_text(title: str, bullets: str, urgent: bool) -> str:
+    prefix = "🚨 ТЕРМІНОВО\n" if urgent else "📰 Новини\n"
+    return f"{prefix}🧭 Тема: {title}\n\nТези:\n{bullets}"
+
+def _news_body_text(title: str, summary: str, link: str) -> str:
+    summary = _clean_html(summary or "")
+    if summary:
+        summary = clip(summary, 1200)
+        body = f"🗞️ Основна новина:\n{title}\n\n{summary}"
+    else:
+        body = f"🗞️ Основна новина:\n{title}"
+    body += f"\n\n🔗 Джерело: {link}"
+    return body
+
+async def _publish_news_entry(
+    context: ContextTypes.DEFAULT_TYPE,
+    title: str,
+    summary: str,
+    link: str,
+    urgent: bool,
+) -> None:
+    bullets = _normalize_bullets(await ai_news_bullets(title, summary))
+    if not bullets:
+        bullets = _fallback_bullets(summary)
+    header = _news_header_text(title, bullets, urgent)
+    body = _news_body_text(title, summary, link)
+
+    try:
+        await context.bot.send_message(
+            chat_id=NEWS_CHANNEL_ID,
+            text=header,
+            disable_web_page_preview=True,
+        )
+        image_bytes = await _generate_news_image(title, summary)
+        if image_bytes:
+            await context.bot.send_photo(
+                chat_id=NEWS_CHANNEL_ID,
+                photo=InputFile(io.BytesIO(image_bytes), filename="news.png"),
+            )
+        await context.bot.send_message(
+            chat_id=NEWS_CHANNEL_ID,
+            text=_append_footer(body, NEWS_CHANNEL_ID),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("News post failed: %s", link)
+        raise
+
 async def news_job(context: ContextTypes.DEFAULT_TYPE):
     if not news_config_ok():
         return
-    if NEWS_AI_FILTER_ENABLED and not ai_enabled() and not NEWS_USE_KEYWORDS:
-        logger.warning("News AI filter enabled but AI unavailable; skipping run")
+    if not RSS_FEEDS or not NEWS_CHANNEL_ID:
         return
-    posted = 0
+
+    urgent_items: List[Dict[str, object]] = []
+    candidates: List[Dict[str, object]] = []
+
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             try:
                 feed_text = await fetch_feed_text(client, feed_url)
                 feed = feedparser.parse(feed_text)
-
-                for entry in (feed.entries or [])[:10]:
-                    if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
-                        return
-                    if not news_rate_ok():
-                        return
+                for entry in (feed.entries or [])[:20]:
                     title = getattr(entry, "title", "") or ""
                     link = getattr(entry, "link", "") or ""
-                    summary = getattr(entry, "summary", "") or ""
+                    summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
                     title_norm = normalize_title(title)
 
                     if not link or link in _seen_links:
                         continue
                     if not title_norm or title_norm in _seen_titles:
                         continue
-                    if NEWS_USE_KEYWORDS and not urgent_by_keywords(title, summary):
-                        continue
 
-                    ai_scores = None
-                    if NEWS_AI_FILTER_ENABLED:
-                        ai_scores = await ai_news_scores(title, summary)
-                        if ai_scores is None:
-                            if NEWS_AI_STRICT or not NEWS_USE_KEYWORDS:
-                                continue
-                        else:
-                            if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
-                                    ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
-                                continue
+                    published = _entry_datetime(entry)
+                    age_hours = _news_age_hours(published)
 
-                    short = ""
-                    if ai_enabled():
-                        try:
-                            safe_summary = (summary or "")[:NEWS_SUMMARY_MAX_CHARS]
-                            resp = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    _ai_client.responses.create,
-                                    model=AI_MODEL,
-                                    instructions="Стисни до 2 речень українською без паніки. Без вигадок.",
-                                    input=f"{title}\n{safe_summary}",
-                                ),
-                                timeout=NEWS_AI_TIMEOUT_SEC,
-                            )
-                            short = (getattr(resp, "output_text", "") or "").strip()
-                        except Exception as exc:
-                            if _ai_should_backoff(exc):
-                                _ai_disable_temporarily("rate limit or quota")
-                            logger.exception("News AI summary failed for feed %s", feed_url)
-                            short = ""
+                    text = f"{title}\n{summary}"
+                    item = {
+                        "title": title,
+                        "link": link,
+                        "summary": summary,
+                        "title_norm": title_norm,
+                        "published": published,
+                        "age_hours": age_hours,
+                        "text": text,
+                    }
 
-                    post = "🚨 ТЕРМІНОВО\n\n" + title + "\n\n"
-                    if ai_scores:
-                        max_score = NEWS_AI_SCORE_SCALE if NEWS_AI_SCORE_SCALE > 0 else 5
-                        post += (
-                            f"🎯 Оцінка AI: критичність {ai_scores['criticality']}/{max_score}, "
-                            f"важливість {ai_scores['importance']}/{max_score}\n\n"
-                        )
-                    if short:
-                        post += "🤖 Коротко:\n" + short + "\n\n"
-                    post += "🔗 Джерело: " + link
-
-                    try:
-                        image_bytes = await _generate_news_image(title, summary)
-                        if image_bytes:
-                            caption = _caption_with_footer(post, NEWS_CHANNEL_ID)
-                            await context.bot.send_photo(
-                                chat_id=NEWS_CHANNEL_ID,
-                                photo=InputFile(io.BytesIO(image_bytes), filename="news.png"),
-                                caption=caption,
-                            )
-                        else:
-                            await post_to_channel(context, post)
-                    except Exception:
-                        logger.exception("News post failed: %s", link)
-                        continue
-                    remember_link(link)
-                    remember_title(title_norm)
-                    mark_news_sent()
-                    posted += 1
-
+                    if _blast_hits(text):
+                        urgent_items.append(item)
+                    else:
+                        if NEWS_MAX_AGE_HOURS > 0 and age_hours > NEWS_MAX_AGE_HOURS:
+                            continue
+                        candidates.append(item)
             except Exception:
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
+
+    # publish urgent blast news immediately (no hourly limit)
+    urgent_items.sort(
+        key=lambda x: x.get("published") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    for item in urgent_items:
+        try:
+            await _publish_news_entry(
+                context,
+                item["title"],
+                item["summary"],
+                item["link"],
+                urgent=True,
+            )
+        except Exception:
+            continue
+        remember_link(item["link"])
+        remember_title(item["title_norm"])
+
+    # AI-selected posts (rate limited)
+    if not NEWS_AI_FILTER_ENABLED:
+        return
+    if not ai_enabled():
+        if candidates:
+            logger.warning("AI unavailable; skipping AI-selected news")
+        return
+
+    # prioritize newest items for scoring
+    candidates.sort(key=lambda x: x.get("published") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    if NEWS_AI_MAX_CANDIDATES > 0:
+        candidates = candidates[:NEWS_AI_MAX_CANDIDATES]
+
+    scored: List[tuple[float, Dict[str, object], Dict[str, int]]] = []
+    for item in candidates:
+        ai_scores = await ai_news_scores(item["title"], item["summary"])
+        if not ai_scores:
+            if NEWS_AI_STRICT:
+                continue
+        else:
+            if (ai_scores["criticality"] < NEWS_AI_MIN_CRITICALITY or
+                    ai_scores["importance"] < NEWS_AI_MIN_IMPORTANCE):
+                continue
+        interest_hits = _interest_hits(item["text"])
+        recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
+        score = (
+            (ai_scores["importance"] if ai_scores else 0) * 2 +
+            (ai_scores["criticality"] if ai_scores else 0) * 2 +
+            interest_hits * NEWS_INTEREST_BOOST +
+            recency
+        )
+        scored.append((score, item, ai_scores or {"criticality": 0, "importance": 0}))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    posted = 0
+    for _, item, _ in scored:
+        if NEWS_MAX_POSTS_PER_RUN > 0 and posted >= NEWS_MAX_POSTS_PER_RUN:
+            break
+        if not news_rate_ok():
+            break
+        try:
+            await _publish_news_entry(
+                context,
+                item["title"],
+                item["summary"],
+                item["link"],
+                urgent=False,
+            )
+        except Exception:
+            continue
+        remember_link(item["link"])
+        remember_title(item["title_norm"])
+        mark_news_sent()
+        posted += 1
 
 async def _collect_summary_items() -> List[Dict[str, object]]:
     if not RSS_FEEDS:
@@ -2330,11 +2538,10 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
     if NEWS_SUMMARY_SEND_TO_CHANNEL and NEWS_CHANNEL_ID:
         try:
             if image_bytes:
-                caption = _caption_with_footer("🗞️ Зведення новин України", NEWS_CHANNEL_ID)
                 await context.bot.send_photo(
                     chat_id=NEWS_CHANNEL_ID,
                     photo=InputFile(io.BytesIO(image_bytes), filename="digest.png"),
-                    caption=caption,
+                    caption="🗞️ Зведення новин України",
                 )
             await context.bot.send_message(
                 chat_id=NEWS_CHANNEL_ID,
@@ -2348,11 +2555,10 @@ async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
         for uid in list(KNOWN_USERS):
             try:
                 if image_bytes:
-                    caption = _caption_with_footer("🗞️ Зведення новин України", uid)
                     await context.bot.send_photo(
                         chat_id=uid,
                         photo=InputFile(io.BytesIO(image_bytes), filename="digest.png"),
-                        caption=caption,
+                        caption="🗞️ Зведення новин України",
                     )
                 await context.bot.send_message(
                     chat_id=uid,
