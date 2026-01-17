@@ -89,7 +89,7 @@ def t(user_id: int, uk: str, en: str) -> str:
 OPENAI_API_KEY = env("OPENAI_API_KEY", "")
 AI_MODEL = env("AI_MODEL", "gpt-5")
 AI_TEMP_DISABLE_SEC = env_int("AI_TEMP_DISABLE_SEC", 900)
-AI_TIMEOUT_SEC = env_int("AI_TIMEOUT_SEC", 20)
+AI_TIMEOUT_SEC = env_int("AI_TIMEOUT_SEC", 30)
 AI_INPUT_MAX_CHARS = env_int("AI_INPUT_MAX_CHARS", 3000)
 
 _ai_client = None
@@ -171,6 +171,9 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
         )
         out = (getattr(resp, "output_text", "") or "").strip()
         return out or t(user_id, "ℹ️ Немає відповіді.", "ℹ️ No answer.")
+    except asyncio.TimeoutError:
+        logger.warning("AI request timed out (user_id=%s mode=%s)", user_id, mode)
+        return t(user_id, "ℹ️ AI тимчасово недоступний.", "ℹ️ AI is currently unavailable.")
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
@@ -1615,7 +1618,7 @@ NEWS_POLL_SEC = env_int("NEWS_POLL_SEC", 120)
 RSS_FEEDS = [u.strip() for u in env("RSS_FEEDS", "").split(",") if u.strip()]
 URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",") if k.strip()]
 NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
-NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 8)
+NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 20)
 NEWS_USE_KEYWORDS = env_bool("NEWS_USE_KEYWORDS", False)
 NEWS_AI_FILTER_ENABLED = env_bool("NEWS_AI_FILTER_ENABLED", False)
 NEWS_AI_STRICT = env_bool("NEWS_AI_STRICT", False)
@@ -1831,6 +1834,9 @@ async def ai_contact_triage(user_id: int, question: str) -> Optional[Dict[str, o
         if not answer:
             return None
         return {"can_answer": True, "answer": answer}
+    except asyncio.TimeoutError:
+        logger.warning("Contact AI triage timed out")
+        return None
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
@@ -1890,6 +1896,9 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
         crit = max(0, min(max_score, crit))
         imp = max(0, min(max_score, imp))
         return {"criticality": crit, "importance": imp}
+    except asyncio.TimeoutError:
+        logger.warning("News AI scoring timed out")
+        return None
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
@@ -1919,6 +1928,9 @@ async def ai_news_bullets(title: str, summary: str) -> str:
         )
         out = (getattr(resp, "output_text", "") or "").strip()
         return out
+    except asyncio.TimeoutError:
+        logger.warning("News AI bullets timed out")
+        return ""
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
@@ -2073,6 +2085,9 @@ async def _generate_news_image(title: str, summary: str) -> Optional[bytes]:
                 if r.status_code < 400:
                     return r.content
         return None
+    except asyncio.TimeoutError:
+        logger.warning("News image generation timed out")
+        return None
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
@@ -2122,6 +2137,9 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
                 r = await client.get(url)
                 if r.status_code < 400:
                     return r.content
+        return None
+    except asyncio.TimeoutError:
+        logger.warning("Summary image generation timed out")
         return None
     except Exception as exc:
         if _ai_should_backoff(exc):
@@ -2497,6 +2515,9 @@ async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
         )
         out = (getattr(resp, "output_text", "") or "").strip()
         return out
+    except asyncio.TimeoutError:
+        logger.warning("AI summary timed out")
+        return ""
     except Exception as exc:
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
