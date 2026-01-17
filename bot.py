@@ -5,6 +5,10 @@ import asyncio
 import logging
 import json
 import random
+import re
+import calendar
+from datetime import datetime, timedelta, time as dt_time, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
@@ -12,10 +16,12 @@ from typing import Dict, List, Optional, Set
 
 import httpx
 import feedparser
+from dateutil import parser as date_parser
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
+from telegram.error import Forbidden
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -1053,6 +1059,50 @@ def clip(s: str, n: int = 300) -> str:
     return s[:n] + "…"
 
 # =========================
+# User tracking (for summary DMs)
+# =========================
+USERS_FILE = Path("data/users.json")
+KNOWN_USERS: Set[int] = set()
+
+def _load_known_users() -> None:
+    if not USERS_FILE.exists():
+        return
+    try:
+        data = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load users list")
+        return
+    if isinstance(data, list):
+        for item in data:
+            try:
+                KNOWN_USERS.add(int(item))
+            except Exception:
+                continue
+
+def _save_known_users() -> None:
+    try:
+        USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        USERS_FILE.write_text(json.dumps(sorted(KNOWN_USERS)), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save users list")
+
+def remember_user_id(user_id: int) -> None:
+    if user_id in KNOWN_USERS:
+        return
+    KNOWN_USERS.add(user_id)
+    _save_known_users()
+
+def track_user(update: Update) -> None:
+    if not update:
+        return
+    user = update.effective_user
+    if not user:
+        return
+    remember_user_id(user.id)
+
+_load_known_users()
+
+# =========================
 # Message cleanup (private chats only)
 # =========================
 LAST_BOT_MESSAGE_ID: Dict[int, int] = {}
@@ -1578,6 +1628,16 @@ _seen_titles: Set[str] = set()
 _seen_titles_order: deque[str] = deque()
 _news_sent_times: deque[float] = deque()
 
+NEWS_SUMMARY_ENABLED = env_bool("NEWS_SUMMARY_ENABLED", False)
+NEWS_SUMMARY_TIMES = env("NEWS_SUMMARY_TIMES", "08:00,14:00,20:00")
+NEWS_SUMMARY_TZ = env("NEWS_SUMMARY_TZ", "Europe/Kyiv")
+NEWS_SUMMARY_LOOKBACK_HOURS = env_int("NEWS_SUMMARY_LOOKBACK_HOURS", 8)
+NEWS_SUMMARY_MAX_ITEMS = env_int("NEWS_SUMMARY_MAX_ITEMS", 12)
+NEWS_SUMMARY_SEEN_MAX = env_int("NEWS_SUMMARY_SEEN_MAX", 2000)
+NEWS_SUMMARY_SEND_TO_USERS = env_bool("NEWS_SUMMARY_SEND_TO_USERS", True)
+NEWS_SUMMARY_SEND_TO_CHANNEL = env_bool("NEWS_SUMMARY_SEND_TO_CHANNEL", True)
+NEWS_SUMMARY_CHANNEL_LINK = env("NEWS_SUMMARY_CHANNEL_LINK", "")
+
 def remember_link(link: str):
     if link in _seen_links:
         return
@@ -1762,6 +1822,105 @@ def news_rate_ok() -> bool:
 def mark_news_sent():
     _news_sent_times.append(time.time())
 
+def _summary_tzinfo():
+    try:
+        return ZoneInfo(NEWS_SUMMARY_TZ)
+    except Exception:
+        return timezone.utc
+
+def _parse_summary_times(value: str) -> List[dt_time]:
+    times: List[dt_time] = []
+    for raw in (value or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            hh, mm = raw.split(":", 1)
+            times.append(dt_time(hour=int(hh), minute=int(mm)))
+        except Exception:
+            continue
+    if not times:
+        times = [dt_time(8, 0), dt_time(14, 0), dt_time(20, 0)]
+    tz = _summary_tzinfo()
+    return [t.replace(tzinfo=tz) for t in times]
+
+def _summary_channel_link() -> str:
+    if NEWS_SUMMARY_CHANNEL_LINK:
+        return NEWS_SUMMARY_CHANNEL_LINK
+    if NEWS_CHANNEL_ID.startswith("@"):
+        return f"https://t.me/{NEWS_CHANNEL_ID[1:]}"
+    return ""
+
+def _clean_html(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(text.split())
+
+def _entry_datetime(entry) -> Optional[datetime]:
+    parsed = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+    if parsed:
+        try:
+            ts = calendar.timegm(parsed)
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            pass
+    raw = getattr(entry, "published", None) or getattr(entry, "updated", None) or ""
+    if raw:
+        try:
+            dt = date_parser.parse(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+SUMMARY_SEEN_FILE = Path("data/summary_seen.json")
+_summary_seen: Set[str] = set()
+_summary_seen_order: deque[str] = deque()
+
+def _load_summary_seen() -> None:
+    if not SUMMARY_SEEN_FILE.exists():
+        return
+    try:
+        data = json.loads(SUMMARY_SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load summary seen list")
+        return
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, str):
+                continue
+            if item in _summary_seen:
+                continue
+            _summary_seen.add(item)
+            _summary_seen_order.append(item)
+
+def _save_summary_seen() -> None:
+    try:
+        SUMMARY_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SUMMARY_SEEN_FILE.write_text(json.dumps(list(_summary_seen_order)), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save summary seen list")
+
+def _mark_summary_links(links: List[str]) -> None:
+    changed = False
+    for link in links:
+        if link in _summary_seen:
+            continue
+        _summary_seen.add(link)
+        _summary_seen_order.append(link)
+        changed = True
+        while len(_summary_seen_order) > NEWS_SUMMARY_SEEN_MAX:
+            old = _summary_seen_order.popleft()
+            _summary_seen.discard(old)
+    if changed:
+        _save_summary_seen()
+
+_load_summary_seen()
+
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(chat_id=NEWS_CHANNEL_ID, text=text, disable_web_page_preview=False)
 
@@ -1867,6 +2026,139 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
 
+async def _collect_summary_items() -> List[Dict[str, object]]:
+    if not RSS_FEEDS:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, NEWS_SUMMARY_LOOKBACK_HOURS))
+    items: List[Dict[str, object]] = []
+    seen: Set[str] = set()
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        for feed_url in RSS_FEEDS:
+            try:
+                feed_text = await fetch_feed_text(client, feed_url)
+                feed = feedparser.parse(feed_text)
+                for entry in (feed.entries or [])[:30]:
+                    title = getattr(entry, "title", "") or ""
+                    link = getattr(entry, "link", "") or ""
+                    if not title or not link or link in seen:
+                        continue
+                    if link in _summary_seen:
+                        continue
+                    published = _entry_datetime(entry)
+                    if published and published < cutoff:
+                        continue
+                    summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
+                    items.append({
+                        "title": title.strip(),
+                        "link": link.strip(),
+                        "summary": _clean_html(summary),
+                        "published": published,
+                    })
+                    seen.add(link)
+            except Exception:
+                logger.exception("summary feed error for %s", feed_url)
+                continue
+    items.sort(key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return items[:max(1, NEWS_SUMMARY_MAX_ITEMS)]
+
+async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
+    if not ai_enabled():
+        return ""
+    lines: List[str] = []
+    for idx, item in enumerate(items, 1):
+        title = item.get("title", "")
+        summary = clip(item.get("summary", ""), 220)
+        if summary:
+            lines.append(f"{idx}. {title} — {summary}")
+        else:
+            lines.append(f"{idx}. {title}")
+    input_text = "\n".join(lines)[:AI_INPUT_MAX_CHARS]
+    instructions = (
+        "Стисла аналітична зведення новин України.\n"
+        "Поверни ТІЛЬКИ український текст у такому форматі:\n"
+        "Ключові тези:\n"
+        "• 4-6 коротких пунктів\n"
+        "Коротка аналітика:\n"
+        "2-3 короткі речення\n"
+        "Без посилань і без вигадок. До 900 символів."
+    )
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.responses.create,
+                model=AI_MODEL,
+                instructions=instructions,
+                input=input_text,
+            ),
+            timeout=NEWS_AI_TIMEOUT_SEC,
+        )
+        out = (getattr(resp, "output_text", "") or "").strip()
+        return out
+    except Exception as exc:
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("AI summary failed")
+        return ""
+
+async def _build_news_summary_text() -> tuple[str, List[str]]:
+    items = await _collect_summary_items()
+    if not items:
+        return "", []
+    ai_text = await _ai_news_summary(items)
+    if not ai_text:
+        bullets = "\n".join([f"• {it['title']}" for it in items[:6]])
+        ai_text = "Ключові тези:\n" + bullets
+
+    header = "🗞️ Зведення новин України"
+    sources: List[str] = []
+    max_len = 3800
+    base = header + "\n\n" + ai_text + "\n\nДжерела:\n"
+    for idx, it in enumerate(items, 1):
+        line = f"{idx}) {clip(it['title'], 140)} — {it['link']}"
+        if len(base) + sum(len(s) + 1 for s in sources) + len(line) > max_len:
+            break
+        sources.append(line)
+    body = base + "\n".join(sources)
+    channel_link = _summary_channel_link()
+    if channel_link:
+        body += f"\n\n🔗 Канал: {channel_link}"
+    links = [it["link"] for it in items if it.get("link")]
+    return body, links
+
+async def news_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    if not NEWS_SUMMARY_ENABLED:
+        return
+    text, links = await _build_news_summary_text()
+    if not text:
+        return
+    delivered = False
+    if NEWS_SUMMARY_SEND_TO_CHANNEL and NEWS_CHANNEL_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=NEWS_CHANNEL_ID,
+                text=text,
+                disable_web_page_preview=True,
+            )
+            delivered = True
+        except Exception:
+            logger.exception("Summary post failed")
+    if NEWS_SUMMARY_SEND_TO_USERS and KNOWN_USERS:
+        for uid in list(KNOWN_USERS):
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=text,
+                    disable_web_page_preview=True,
+                )
+                delivered = True
+            except Forbidden:
+                KNOWN_USERS.discard(uid)
+                _save_known_users()
+            except Exception:
+                logger.exception("Summary DM failed for %s", uid)
+    if delivered and links:
+        _mark_summary_links(links)
+
 # =========================
 # Conversation states
 # =========================
@@ -1889,6 +2181,7 @@ async def news_job(context: ContextTypes.DEFAULT_TYPE):
 # Command handlers
 # =========================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     uid = update.effective_user.id
     name = display_name(update.effective_user)
     greet = greeting_text(uid, name)
@@ -1917,6 +2210,7 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"OK\n"
         f"AI={'on' if ai_enabled() else 'off'}\n"
         f"NEWS={'on' if news_config_ok() else 'off'}\n"
+        f"NEWS_SUMMARY={'on' if NEWS_SUMMARY_ENABLED else 'off'}\n"
         f"ALERTS={'on' if ua_alarm_enabled() else 'off'}"
     )
     await send_with_cleanup(
@@ -2040,6 +2334,7 @@ async def regions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Menu callback handler (menu/info/news)
 # =========================
 async def menu_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2213,6 +2508,7 @@ async def alerts_oblast_menu(q, uid: int, bot, page: int = 0):
     )
 
 async def alerts_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2353,6 +2649,7 @@ async def product_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Apply conversation handlers
 # =========================
 async def apply_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2541,6 +2838,7 @@ async def apply_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Contact form handlers (AI triage)
 # =========================
 async def contact_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2653,6 +2951,7 @@ async def contact_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Service form handlers
 # =========================
 async def service_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2750,6 +3049,7 @@ async def service_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # FAQ conversation handlers
 # =========================
 async def faq_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -2886,6 +3186,9 @@ async def post_init(application):
         logger.exception("Failed to delete webhook")
     if news_config_ok():
         application.job_queue.run_repeating(news_job, interval=NEWS_POLL_SEC, first=15)
+    if NEWS_SUMMARY_ENABLED:
+        for t in _parse_summary_times(NEWS_SUMMARY_TIMES):
+            application.job_queue.run_daily(news_summary_job, time=t)
     if ua_alarm_enabled():
         application.job_queue.run_repeating(alerts_job, interval=UA_ALARM_POLL_SEC, first=5)
 
