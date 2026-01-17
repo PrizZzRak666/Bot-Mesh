@@ -1671,6 +1671,11 @@ NEWS_TITLE_SIM_MIN_TOKENS = env_int("NEWS_TITLE_SIM_MIN_TOKENS", 4)
 NEWS_TITLE_SIM_SEEN_MAX = env_int("NEWS_TITLE_SIM_SEEN_MAX", 800)
 NEWS_WHITELIST_KEYWORDS = [k.strip() for k in env("NEWS_WHITELIST_KEYWORDS", "").split(",") if k.strip()]
 NEWS_WHITELIST_BOOST = env_int("NEWS_WHITELIST_BOOST", 3)
+NEWS_BLOCK_KEYWORDS = [k.strip() for k in env("NEWS_BLOCK_KEYWORDS", "").split(",") if k.strip()]
+NEWS_ALLOW_FEEDS = [u.strip() for u in env("NEWS_ALLOW_FEEDS", "").split(",") if u.strip()]
+NEWS_BLOCK_FEEDS = [u.strip() for u in env("NEWS_BLOCK_FEEDS", "").split(",") if u.strip()]
+NEWS_PRIORITY_FEEDS = [u.strip() for u in env("NEWS_PRIORITY_FEEDS", "").split(",") if u.strip()]
+NEWS_PRIORITY_FEED_BOOST = env_int("NEWS_PRIORITY_FEED_BOOST", 2)
 NEWS_DEPRIORITY_KEYWORDS = [
     k.strip() for k in env(
         "NEWS_DEPRIORITY_KEYWORDS",
@@ -1678,6 +1683,10 @@ NEWS_DEPRIORITY_KEYWORDS = [
     ).split(",") if k.strip()
 ]
 NEWS_DEPRIORITY_PENALTY = env_int("NEWS_DEPRIORITY_PENALTY", 4)
+NEWS_MAX_URGENT_PER_HOUR = env_int("NEWS_MAX_URGENT_PER_HOUR", 8)
+NEWS_FEED_FAIL_THRESHOLD = env_int("NEWS_FEED_FAIL_THRESHOLD", 3)
+NEWS_FEED_EMPTY_THRESHOLD = env_int("NEWS_FEED_EMPTY_THRESHOLD", 4)
+NEWS_FEED_DISABLE_SEC = env_int("NEWS_FEED_DISABLE_SEC", 900)
 NEWS_BLAST_KEYWORDS = [k.strip() for k in env("NEWS_BLAST_KEYWORDS", "вибух,вибухи").split(",") if k.strip()]
 NEWS_BLAST_CONTEXT_KEYWORDS = [
     k.strip() for k in env(
@@ -1689,12 +1698,15 @@ NEWS_BLAST_CONTEXT_KEYWORDS = [
 _seen_links: Set[str] = set()
 _seen_order: deque[str] = deque()
 _feed_redirects: Dict[str, str] = {}
+_feed_cache: Dict[str, Dict[str, str]] = {}
+_feed_health: Dict[str, Dict[str, object]] = {}
 _seen_titles: Set[str] = set()
 _seen_titles_order: deque[str] = deque()
 _seen_title_tokens_sigs: Set[str] = set()
 _seen_title_tokens_order: deque[str] = deque()
 _seen_title_tokens_sets: deque[Set[str]] = deque()
 _news_sent_times: deque[float] = deque()
+_news_urgent_sent_times: deque[float] = deque()
 _news_job_lock = asyncio.Lock()
 
 NEWS_SUMMARY_ENABLED = env_bool("NEWS_SUMMARY_ENABLED", False)
@@ -1705,6 +1717,9 @@ NEWS_SUMMARY_MAX_ITEMS = env_int("NEWS_SUMMARY_MAX_ITEMS", 12)
 NEWS_SUMMARY_SEEN_MAX = env_int("NEWS_SUMMARY_SEEN_MAX", 2000)
 NEWS_SUMMARY_SEND_TO_CHANNEL = env_bool("NEWS_SUMMARY_SEND_TO_CHANNEL", True)
 NEWS_SUMMARY_CHANNEL_LINK = env("NEWS_SUMMARY_CHANNEL_LINK", "")
+
+NEWS_STATS_ENABLED = env_bool("NEWS_STATS_ENABLED", True)
+NEWS_STATS_RETENTION_HOURS = env_int("NEWS_STATS_RETENTION_HOURS", 168)
 
 FOOTER_ENABLED = env_bool("FOOTER_ENABLED", False)
 FOOTER_BOT_LINK = env("FOOTER_BOT_LINK", "")
@@ -1838,6 +1853,64 @@ def normalize_link(link: str) -> str:
         return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, ""))
     except Exception:
         return link
+
+def _feed_matches(feed_url: str, patterns: List[str]) -> bool:
+    if not patterns:
+        return False
+    for pat in patterns:
+        if not pat:
+            continue
+        if feed_url == pat or pat in feed_url:
+            return True
+    return False
+
+def _feed_allowed(feed_url: str) -> bool:
+    if NEWS_ALLOW_FEEDS and not _feed_matches(feed_url, NEWS_ALLOW_FEEDS):
+        return False
+    if NEWS_BLOCK_FEEDS and _feed_matches(feed_url, NEWS_BLOCK_FEEDS):
+        return False
+    return True
+
+def _feed_disabled(feed_url: str) -> bool:
+    data = _feed_health.get(feed_url)
+    if not data:
+        return False
+    disabled_until = float(data.get("disabled_until") or 0)
+    return time.time() < disabled_until
+
+def _feed_record_failure(feed_url: str, reason: str) -> None:
+    data = _feed_health.setdefault(feed_url, {"failures": 0, "empty": 0, "disabled_until": 0.0})
+    data["failures"] = int(data.get("failures") or 0) + 1
+    if NEWS_FEED_FAIL_THRESHOLD > 0 and data["failures"] >= NEWS_FEED_FAIL_THRESHOLD:
+        data["disabled_until"] = time.time() + max(0, NEWS_FEED_DISABLE_SEC)
+        data["failures"] = 0
+        data["empty"] = 0
+        logger.warning("Feed disabled: %s (%s)", feed_url, reason)
+
+def _feed_record_empty(feed_url: str) -> None:
+    data = _feed_health.setdefault(feed_url, {"failures": 0, "empty": 0, "disabled_until": 0.0})
+    data["empty"] = int(data.get("empty") or 0) + 1
+    if NEWS_FEED_EMPTY_THRESHOLD > 0 and data["empty"] >= NEWS_FEED_EMPTY_THRESHOLD:
+        data["disabled_until"] = time.time() + max(0, NEWS_FEED_DISABLE_SEC)
+        data["failures"] = 0
+        data["empty"] = 0
+        logger.warning("Feed disabled: %s (empty)", feed_url)
+
+def _feed_record_success(feed_url: str) -> None:
+    data = _feed_health.setdefault(feed_url, {"failures": 0, "empty": 0, "disabled_until": 0.0})
+    data["failures"] = 0
+    data["empty"] = 0
+
+def _feed_cache_headers(feed_url: str) -> Dict[str, str]:
+    headers = {"User-Agent": "TelegramBot/1.0"}
+    meta = _feed_cache.get(feed_url) or {}
+    etag = meta.get("etag")
+    last_modified = meta.get("last_modified")
+    if etag:
+        headers["If-None-Match"] = etag
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
+    return headers
 
 NEWS_SEEN_FILE = Path("data/news_seen.json")
 
@@ -1984,6 +2057,16 @@ def _whitelist_hits(text: str) -> int:
         return 0
     hits = 0
     for kw in NEWS_WHITELIST_KEYWORDS:
+        if kw.lower() in text:
+            hits += 1
+    return hits
+
+def _block_hits(text: str) -> int:
+    text = (text or "").lower()
+    if not text or not NEWS_BLOCK_KEYWORDS:
+        return 0
+    hits = 0
+    for kw in NEWS_BLOCK_KEYWORDS:
         if kw.lower() in text:
             hits += 1
     return hits
@@ -2201,6 +2284,17 @@ def news_rate_ok() -> bool:
 
 def mark_news_sent():
     _news_sent_times.append(time.time())
+
+def urgent_rate_ok() -> bool:
+    if NEWS_MAX_URGENT_PER_HOUR <= 0:
+        return True
+    now = time.time()
+    while _news_urgent_sent_times and now - _news_urgent_sent_times[0] > 3600:
+        _news_urgent_sent_times.popleft()
+    return len(_news_urgent_sent_times) < NEWS_MAX_URGENT_PER_HOUR
+
+def mark_urgent_sent():
+    _news_urgent_sent_times.append(time.time())
 
 def _summary_tzinfo():
     try:
@@ -2491,6 +2585,75 @@ def _mark_summary_links(links: List[str]) -> None:
 
 _load_summary_seen()
 
+NEWS_STATS_FILE = Path("data/news_stats.json")
+_news_stats: deque[Dict[str, object]] = deque()
+
+def _trim_news_stats() -> None:
+    if NEWS_STATS_RETENTION_HOURS <= 0:
+        _news_stats.clear()
+        return
+    cutoff = time.time() - NEWS_STATS_RETENTION_HOURS * 3600
+    while _news_stats and float(_news_stats[0].get("ts") or 0) < cutoff:
+        _news_stats.popleft()
+
+def _load_news_stats() -> None:
+    if not NEWS_STATS_FILE.exists():
+        return
+    try:
+        data = json.loads(NEWS_STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load news stats")
+        return
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            _news_stats.append(item)
+    _trim_news_stats()
+
+def _save_news_stats() -> None:
+    try:
+        NEWS_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        NEWS_STATS_FILE.write_text(json.dumps(list(_news_stats)), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save news stats")
+
+def _record_news_stat(feed_url: str, title: str, urgent: bool) -> None:
+    if not NEWS_STATS_ENABLED:
+        return
+    tokens = list(_title_tokens(title))[:20]
+    _news_stats.append({
+        "ts": time.time(),
+        "feed": feed_url,
+        "urgent": bool(urgent),
+        "tokens": tokens,
+    })
+    _trim_news_stats()
+    _save_news_stats()
+
+def _stats_window(hours: int) -> List[Dict[str, object]]:
+    if hours <= 0:
+        return []
+    cutoff = time.time() - hours * 3600
+    return [it for it in _news_stats if float(it.get("ts") or 0) >= cutoff]
+
+def _top_counts(items: List[Dict[str, object]], key: str, limit: int) -> List[tuple[str, int]]:
+    counts: Dict[str, int] = {}
+    for it in items:
+        value = it.get(key)
+        if not value:
+            continue
+        if isinstance(value, list):
+            for v in value:
+                if not v:
+                    continue
+                counts[str(v)] = counts.get(str(v), 0) + 1
+        else:
+            counts[str(value)] = counts.get(str(value), 0) + 1
+    return sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+
+_load_news_stats()
+
 async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     await context.bot.send_message(
         chat_id=NEWS_CHANNEL_ID,
@@ -2499,9 +2662,11 @@ async def post_to_channel(context: ContextTypes.DEFAULT_TYPE, text: str):
     )
 
 async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
-    headers = {"User-Agent": "TelegramBot/1.0"}
+    headers = _feed_cache_headers(feed_url)
     url = _feed_redirects.get(feed_url, feed_url)
     r = await client.get(url, headers=headers, follow_redirects=True)
+    if r.status_code == 304:
+        return ""
     if r.is_redirect:
         location = r.headers.get("location")
         if not location:
@@ -2510,8 +2675,18 @@ async def fetch_feed_text(client: httpx.AsyncClient, feed_url: str) -> str:
         logger.info("RSS redirect: %s -> %s", url, redirect_url)
         _feed_redirects[feed_url] = redirect_url
         r = await client.get(redirect_url, headers=headers, follow_redirects=True)
+        if r.status_code == 304:
+            return ""
     if r.status_code >= 400:
         r.raise_for_status()
+    etag = r.headers.get("etag")
+    last_modified = r.headers.get("last-modified")
+    if etag or last_modified:
+        meta = _feed_cache.setdefault(feed_url, {})
+        if etag:
+            meta["etag"] = etag
+        if last_modified:
+            meta["last_modified"] = last_modified
     return r.text
 
 def _news_age_hours(published: Optional[datetime]) -> float:
@@ -2525,16 +2700,38 @@ def _fallback_bullets(summary: str) -> str:
     summary = _clean_html(summary or "")
     if not summary:
         return "• Немає короткого опису у джерелі."
-    parts = re.split(r"[.!?]+", summary)
-    lines = []
-    for part in parts:
-        part = part.strip()
-        if not part:
+    parts = [p.strip() for p in re.split(r"[.!?]+", summary) if p.strip()]
+    if not parts:
+        return "• Деталі у джерелі."
+    keywords = URGENT_KEYWORDS + NEWS_WHITELIST_KEYWORDS + NEWS_INTEREST_KEYWORDS
+
+    def score_sentence(text: str) -> int:
+        score = 0
+        length = len(text)
+        if 40 <= length <= 180:
+            score += 2
+        elif length < 25 or length > 220:
+            score -= 1
+        if re.search(r"\d", text):
+            score += 1
+        if _text_has_any(text, keywords):
+            score += 1
+        return score
+
+    scored = [(score_sentence(p), idx, p) for idx, p in enumerate(parts)]
+    scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+    chosen = []
+    seen = set()
+    for _, _, sent in scored:
+        if sent in seen:
             continue
-        lines.append(f"• {part}")
-        if len(lines) >= 4:
+        seen.add(sent)
+        chosen.append(sent)
+        if len(chosen) >= 4:
             break
-    return "\n".join(lines) if lines else "• Деталі у джерелі."
+    if not chosen:
+        return "• Деталі у джерелі."
+    return "\n".join([f"• {s}" for s in chosen])
 
 def _normalize_bullets(text: str) -> str:
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
@@ -2657,6 +2854,7 @@ async def _publish_news_entry(
     summary: str,
     link: str,
     urgent: bool,
+    feed_url: str,
 ) -> None:
     bullets = _normalize_bullets(await ai_news_bullets(title, summary))
     if not bullets:
@@ -2681,6 +2879,7 @@ async def _publish_news_entry(
                 text=_append_footer(text, NEWS_CHANNEL_ID),
                 disable_web_page_preview=True,
             )
+        _record_news_stat(feed_url, title, urgent)
         logger.info("News post delivered: urgent=%s title=%s link=%s", urgent, clip(title, 120), link)
     except Exception:
         logger.exception("News post failed: %s", link)
@@ -2702,12 +2901,17 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     stat_keys = [
         "feeds_ok",
         "entries",
+        "skipped_feed_blocked",
+        "skipped_feed_disabled",
+        "not_modified",
+        "empty",
         "skipped_no_link",
         "skipped_seen_link",
         "skipped_run_link",
         "skipped_no_title",
         "skipped_seen_title",
         "skipped_run_title",
+        "skipped_block_kw",
         "skipped_similar_title",
         "skipped_old",
         "urgent",
@@ -2719,8 +2923,20 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
             fs = feed_stats.setdefault(feed_url, {k: 0 for k in stat_keys})
+            if not _feed_allowed(feed_url):
+                stats["skipped_feed_blocked"] += 1
+                fs["skipped_feed_blocked"] += 1
+                continue
+            if _feed_disabled(feed_url):
+                stats["skipped_feed_disabled"] += 1
+                fs["skipped_feed_disabled"] += 1
+                continue
             try:
                 feed_text = await fetch_feed_text(client, feed_url)
+                if not feed_text:
+                    stats["not_modified"] += 1
+                    fs["not_modified"] += 1
+                    continue
                 feed = feedparser.parse(feed_text)
                 stats["feeds_ok"] += 1
                 fs["feeds_ok"] += 1
@@ -2768,6 +2984,11 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     age_hours = _news_age_hours(published)
 
                     text = f"{title}\n{summary}"
+                    block_hits = _block_hits(text)
+                    if block_hits > 0:
+                        stats["skipped_block_kw"] += 1
+                        fs["skipped_block_kw"] += 1
+                        continue
                     deprior_hits = _deprioritize_hits(text)
                     whitelist_hits = _whitelist_hits(text)
                     item = {
@@ -2775,6 +2996,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                         "link": link,
                         "summary": summary,
                         "title_norm": title_norm,
+                        "feed_url": feed_url,
                         "published": published,
                         "age_hours": age_hours,
                         "text": text,
@@ -2798,42 +3020,61 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     run_seen_titles.add(title_norm)
                     if title_tokens:
                         run_seen_title_tokens.append(title_tokens)
+                if feed.entries:
+                    _feed_record_success(feed_url)
+                else:
+                    stats["empty"] += 1
+                    fs["empty"] += 1
+                    _feed_record_empty(feed_url)
             except Exception:
+                _feed_record_failure(feed_url, "news fetch")
                 logger.exception("news_job error for feed %s", feed_url)
                 continue
     logger.info(
         "News poll stats: feeds=%s ok=%s entries=%s urgent=%s candidates=%s "
+        "skipped_feed_blocked=%s skipped_feed_disabled=%s not_modified=%s empty=%s "
         "skipped_no_link=%s skipped_no_title=%s skipped_seen_link=%s skipped_seen_title=%s "
-        "skipped_run_link=%s skipped_run_title=%s skipped_similar_title=%s skipped_old=%s",
+        "skipped_run_link=%s skipped_run_title=%s skipped_block_kw=%s skipped_similar_title=%s skipped_old=%s",
         len(RSS_FEEDS),
         stats["feeds_ok"],
         stats["entries"],
         stats["urgent"],
         stats["candidate"],
+        stats["skipped_feed_blocked"],
+        stats["skipped_feed_disabled"],
+        stats["not_modified"],
+        stats["empty"],
         stats["skipped_no_link"],
         stats["skipped_no_title"],
         stats["skipped_seen_link"],
         stats["skipped_seen_title"],
         stats["skipped_run_link"],
         stats["skipped_run_title"],
+        stats["skipped_block_kw"],
         stats["skipped_similar_title"],
         stats["skipped_old"],
     )
     for feed_url, fs in feed_stats.items():
         logger.info(
             "News feed stats: url=%s entries=%s urgent=%s candidates=%s "
+            "skipped_feed_blocked=%s skipped_feed_disabled=%s not_modified=%s empty=%s "
             "skipped_no_link=%s skipped_no_title=%s skipped_seen_link=%s skipped_seen_title=%s "
-            "skipped_run_link=%s skipped_run_title=%s skipped_similar_title=%s skipped_old=%s",
+            "skipped_run_link=%s skipped_run_title=%s skipped_block_kw=%s skipped_similar_title=%s skipped_old=%s",
             feed_url,
             fs["entries"],
             fs["urgent"],
             fs["candidate"],
+            fs["skipped_feed_blocked"],
+            fs["skipped_feed_disabled"],
+            fs["not_modified"],
+            fs["empty"],
             fs["skipped_no_link"],
             fs["skipped_no_title"],
             fs["skipped_seen_link"],
             fs["skipped_seen_title"],
             fs["skipped_run_link"],
             fs["skipped_run_title"],
+            fs["skipped_block_kw"],
             fs["skipped_similar_title"],
             fs["skipped_old"],
         )
@@ -2844,6 +3085,9 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
         reverse=True,
     )
     for item in urgent_items:
+        if not urgent_rate_ok():
+            logger.info("Urgent rate limit reached")
+            break
         try:
             await _publish_news_entry(
                 context,
@@ -2851,12 +3095,14 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                 item["summary"],
                 item["link"],
                 urgent=True,
+                feed_url=item.get("feed_url") or "",
             )
         except Exception:
             continue
         remember_link(item["link"])
         remember_title(item["title_norm"])
         remember_title_tokens(item["title"])
+        mark_urgent_sent()
 
     # AI-selected posts (rate limited)
     if NEWS_AI_FILTER_ENABLED and ai_enabled():
@@ -2879,11 +3125,13 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
             deprior_hits = item.get("deprior_hits", 0) or 0
             whitelist_hits = item.get("whitelist_hits", 0) or 0
+            feed_boost = NEWS_PRIORITY_FEED_BOOST if _feed_matches(str(item.get("feed_url") or ""), NEWS_PRIORITY_FEEDS) else 0
             score = (
                 (ai_scores["importance"] if ai_scores else 0) * 2 +
                 (ai_scores["criticality"] if ai_scores else 0) * 2 +
                 interest_hits * NEWS_INTEREST_BOOST +
                 whitelist_hits * NEWS_WHITELIST_BOOST +
+                feed_boost +
                 recency -
                 deprior_hits * NEWS_DEPRIORITY_PENALTY
             )
@@ -2903,6 +3151,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                     item["summary"],
                     item["link"],
                     urgent=False,
+                    feed_url=item.get("feed_url") or "",
                 )
             except Exception:
                 continue
@@ -2926,11 +3175,13 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             deprior_hits = item.get("deprior_hits", 0) or 0
             whitelist_hits = item.get("whitelist_hits", 0) or 0
             recency = max(0.0, NEWS_RECENCY_BOOST - item["age_hours"])
+            feed_boost = NEWS_PRIORITY_FEED_BOOST if _feed_matches(str(item.get("feed_url") or ""), NEWS_PRIORITY_FEEDS) else 0
             item["score"] = (
                 hits * 10 +
                 recency +
                 whitelist_hits * NEWS_WHITELIST_BOOST -
-                deprior_hits * NEWS_DEPRIORITY_PENALTY
+                deprior_hits * NEWS_DEPRIORITY_PENALTY +
+                feed_boost
             )
             keyword_items.append(item)
 
@@ -2957,6 +3208,7 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
                 item["summary"],
                 item["link"],
                 urgent=False,
+                feed_url=item.get("feed_url") or "",
             )
         except Exception:
             continue
@@ -2981,8 +3233,12 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
     seen: Set[str] = set()
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         for feed_url in RSS_FEEDS:
+            if not _feed_allowed(feed_url) or _feed_disabled(feed_url):
+                continue
             try:
                 feed_text = await fetch_feed_text(client, feed_url)
+                if not feed_text:
+                    continue
                 feed = feedparser.parse(feed_text)
                 for entry in (feed.entries or [])[:30]:
                     title = getattr(entry, "title", "") or ""
@@ -2996,6 +3252,8 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
                     if published and published < cutoff:
                         continue
                     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
+                    if _block_hits(f"{title}\n{summary}") > 0:
+                        continue
                     items.append({
                         "title": title.strip(),
                         "link": link_key.strip(),
@@ -3003,7 +3261,12 @@ async def _collect_summary_items() -> List[Dict[str, object]]:
                         "published": published,
                     })
                     seen.add(link_key)
+                if feed.entries:
+                    _feed_record_success(feed_url)
+                else:
+                    _feed_record_empty(feed_url)
             except Exception:
+                _feed_record_failure(feed_url, "summary fetch")
                 logger.exception("summary feed error for %s", feed_url)
                 continue
     items.sort(key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
@@ -3426,6 +3689,64 @@ async def summary_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             t(uid, "❌ Помилка під час запуску.", "❌ Failed to run summary."),
             reply_markup=menu_only_kb(uid),
         )
+
+async def news_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_STATS_ENABLED:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Статистика вимкнена.", "ℹ️ Stats are disabled."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    raw = (context.args[0] if context.args else "24").strip().lower()
+    hours = 24
+    if raw.endswith("d"):
+        try:
+            hours = max(1, int(raw[:-1])) * 24
+        except Exception:
+            hours = 24
+    else:
+        try:
+            hours = max(1, int(raw))
+        except Exception:
+            hours = 24
+    items = _stats_window(hours)
+    if not items:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "ℹ️ Немає даних за цей період.", "ℹ️ No data for this period."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    feeds = _top_counts(items, "feed", 5)
+    topics = _top_counts(items, "tokens", 8)
+    urgent = sum(1 for it in items if it.get("urgent"))
+    total = len(items)
+    header = f"📊 News stats ({hours}h)\nTotal: {total} | Urgent: {urgent}\n"
+    feed_lines = "\n".join([f"• {cnt} — {feed}" for feed, cnt in feeds]) or "• —"
+    topic_lines = "\n".join([f"• {cnt} — {tok}" for tok, cnt in topics]) or "• —"
+    text = header + "\nSources:\n" + feed_lines + "\n\nTopics:\n" + topic_lines
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        clip(text, 3800),
+        reply_markup=menu_only_kb(uid),
+    )
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -4446,6 +4767,7 @@ def main():
     app.add_handler(CommandHandler("news_image_test", news_image_test_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
+    app.add_handler(CommandHandler("news_stats", news_stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("regions", regions_cmd))
 
