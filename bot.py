@@ -1797,6 +1797,8 @@ CHANNEL_POSTS_LANG = env("CHANNEL_POSTS_LANG", "uk").strip().lower()
 CHANNEL_POSTS_TZ = env("CHANNEL_POSTS_TZ", NEWS_SUMMARY_TZ)
 CHANNEL_POSTS_TIMES = env("CHANNEL_POSTS_TIMES", "").strip()
 CHANNEL_POSTS_USE_WEEKLY_PLAN = env_bool("CHANNEL_POSTS_USE_WEEKLY_PLAN", True)
+CHANNEL_POSTS_TONE = env("CHANNEL_POSTS_TONE", "auto").strip().lower()
+CHANNEL_HOOK_CHANCE = env_float("CHANNEL_HOOK_CHANCE", 0.35)
 CHANNEL_POSTS_TOPICS_RAW = env("CHANNEL_POSTS_TOPICS", "").strip()
 CHANNEL_POSTS_TOPICS_FILE = env("CHANNEL_POSTS_TOPICS_FILE", "channel_topics.txt").strip()
 CHANNEL_POSTS_IMAGE_ENABLED = env_bool(
@@ -4079,6 +4081,28 @@ def _weekly_plan_slot(now: datetime) -> str:
     slot = schedule.get(weekday, ("1", "2"))
     return slot[0] if morning else slot[1]
 
+def _peek_topic_from_list(topics: List[str]) -> str:
+    if not topics:
+        return "status"
+    start_idx = _channel_posts_index % len(topics)
+    for offset in range(len(topics)):
+        idx = (start_idx + offset) % len(topics)
+        candidate = topics[idx]
+        if not _topic_recently_used(candidate):
+            return candidate
+    return topics[start_idx]
+
+def _peek_channel_topic() -> str:
+    if CHANNEL_POSTS_USE_WEEKLY_PLAN:
+        slot = _weekly_plan_slot(_channel_now())
+        if slot in ("quiet", "weekly_summary"):
+            return slot
+        topics_by_block = _channel_topics_by_block()
+        block_topics = topics_by_block.get(slot, [])
+        if block_topics:
+            return _peek_topic_from_list(block_topics)
+    return _peek_topic_from_list(_channel_topics())
+
 def _pick_topic_from_list(topics: List[str]) -> str:
     if not topics:
         return "status"
@@ -4239,6 +4263,7 @@ def _channel_bot_line(lang: str) -> str:
 
 def _channel_ai_instructions(lang: str) -> str:
     language = "Ukrainian" if lang == "uk" else "English"
+    tone = _channel_tone(lang)
     return (
         "You write short official posts for a Telegram channel.\n"
         "HARD RULES:\n"
@@ -4253,6 +4278,7 @@ def _channel_ai_instructions(lang: str) -> str:
         "9) If relevant, include 1-2 lifehacks (charging without grid, long-lasting light) but avoid impossible claims.\n"
         f"10) Each action line should be {CHANNEL_POSTS_ACTION_MIN_WORDS}-{CHANNEL_POSTS_ACTION_MAX_WORDS} words.\n"
         f"Language: {language}.\n"
+        f"Tone: {tone}.\n"
     )
 
 def _channel_post_image_skip_reason() -> str:
@@ -5068,6 +5094,17 @@ def _channel_time_badge(now: datetime, lang: str) -> str:
         return "🌙 Вечірня перевірка" if lang == "uk" else "🌙 Evening check"
     return ""
 
+def _channel_tone(lang: str) -> str:
+    base = CHANNEL_POSTS_TONE
+    if base and base not in ("auto", "default"):
+        return base
+    now = _channel_now()
+    if now.hour < 12:
+        return "energizing, focused, practical" if lang == "en" else "енергійний, зібраний, практичний"
+    if now.hour >= 18:
+        return "calm, reassuring, practical" if lang == "en" else "спокійний, підтримуючий, практичний"
+    return "direct, concise, practical" if lang == "en" else "чіткий, лаконічний, практичний"
+
 def _channel_reason_line(topic: str, lang: str) -> str:
     t = (topic or "").strip().lower()
     if not t:
@@ -5083,7 +5120,7 @@ def _channel_reason_line(topic: str, lang: str) -> str:
     return "Навіщо: простий план без паніки." if lang == "uk" else "Why: a simple calm plan."
 
 def _channel_hook_line(lang: str) -> str:
-    if random.random() < 0.35:
+    if random.random() < CHANNEL_HOOK_CHANCE:
         return ""
     variants = CHANNEL_HOOK_LINES.get(lang, CHANNEL_HOOK_LINES["uk"])
     return random.choice(variants) if variants else ""
@@ -6025,6 +6062,56 @@ async def channel_post_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
             update.effective_chat.id,
             update.message.reply_text,
             t(uid, "❌ Помилка під час відправки.", "❌ Failed to send post."),
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def channel_preview_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    topic_arg = " ".join(context.args or []).strip()
+    topic = topic_arg if topic_arg else _peek_channel_topic()
+    lang = _channel_post_lang()
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Готую превʼю...", "⏳ Preparing preview..."),
+    )
+    try:
+        text = await _build_channel_post(topic, lang)
+        if not text:
+            await send_with_cleanup(
+                context.bot,
+                update.effective_chat.id,
+                update.message.reply_text,
+                t(uid, "❌ Не вдалося згенерувати превʼю.", "❌ Failed to generate preview."),
+                reply_markup=menu_only_kb(uid),
+            )
+            return
+        header = t(uid, f"🧪 Превʼю\nТема: {topic}\n\n", f"🧪 Preview\nTopic: {topic}\n\n")
+        preview = clip(header + text, 3800)
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            preview,
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("Manual preview failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час превʼю.", "❌ Failed to preview."),
             reply_markup=menu_only_kb(uid),
         )
 
@@ -7307,6 +7394,7 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
     app.add_handler(CommandHandler("channel_post_now", channel_post_now_cmd))
+    app.add_handler(CommandHandler("channel_preview", channel_preview_cmd))
     app.add_handler(CommandHandler("meme_now", meme_now_cmd))
     app.add_handler(CommandHandler("news_stats", news_stats_cmd))
     app.add_handler(CommandHandler("news_keywords_suggest", news_keywords_suggest_cmd))
