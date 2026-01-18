@@ -1741,6 +1741,10 @@ CHANNEL_POSTS_IMAGE_MODEL = env("CHANNEL_POSTS_IMAGE_MODEL", "gpt-image-1")
 CHANNEL_POSTS_IMAGE_SIZE = env("CHANNEL_POSTS_IMAGE_SIZE", "1024x1024")
 CHANNEL_POSTS_IMAGE_TIMEOUT_SEC = env_int("CHANNEL_POSTS_IMAGE_TIMEOUT_SEC", 20)
 CHANNEL_POSTS_IMAGE_TEMP_DISABLE_SEC = env_int("CHANNEL_POSTS_IMAGE_TEMP_DISABLE_SEC", 900)
+CHANNEL_POSTS_IMAGE_STYLES = env(
+    "CHANNEL_POSTS_IMAGE_STYLES",
+    "flat-vector,soft-gradient,paper-cut,monoline,grainy-duotone",
+)
 CHANNEL_POSTS_ACTION_HISTORY_MAX = env_int("CHANNEL_POSTS_ACTION_HISTORY_MAX", 120)
 CHANNEL_POSTS_ACTION_REPEAT_MAX = env_int("CHANNEL_POSTS_ACTION_REPEAT_MAX", 0)
 CHANNEL_POSTS_ACTION_MIN_WORDS = env_int("CHANNEL_POSTS_ACTION_MIN_WORDS", 2)
@@ -1753,6 +1757,11 @@ NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
 NEWS_IMAGE_SIZE = env("NEWS_IMAGE_SIZE", "1024x1024")
 NEWS_IMAGE_TIMEOUT_SEC = env_int("NEWS_IMAGE_TIMEOUT_SEC", 20)
 NEWS_IMAGE_TEMP_DISABLE_SEC = env_int("NEWS_IMAGE_TEMP_DISABLE_SEC", 900)
+NEWS_IMAGE_STYLES = env(
+    "NEWS_IMAGE_STYLES",
+    "editorial-ink,soft-gradient,paper-cut,isometric,flat-vector,grainy-duotone,monoline,watercolor",
+)
+NEWS_SUMMARY_IMAGE_STYLES = env("NEWS_SUMMARY_IMAGE_STYLES", "")
 _news_images_disabled_until = 0.0
 
 def _news_image_skip_reason() -> str:
@@ -2404,6 +2413,71 @@ async def _init_bot_public_link(application) -> None:
     except Exception:
         logger.exception("Failed to resolve bot public link")
 
+IMAGE_STYLE_PRESETS = {
+    "editorial-ink": "editorial ink illustration, high contrast, clean lines",
+    "soft-gradient": "soft gradient poster, minimal shapes",
+    "paper-cut": "layered paper-cut collage, tactile depth",
+    "isometric": "isometric scene, simplified geometry",
+    "flat-vector": "flat vector illustration, bold shapes",
+    "grainy-duotone": "duotone with subtle grain, calm palette",
+    "monoline": "monoline illustration, minimal linework",
+    "watercolor": "watercolor wash, soft edges",
+}
+
+_last_news_image_style = ""
+_last_summary_image_style = ""
+_last_channel_image_style = ""
+
+def _normalize_style_key(value: str) -> str:
+    return (value or "").strip().lower()
+
+def _parse_style_pool(value: str, fallback: List[str]) -> List[str]:
+    raw = _normalize_style_key(value)
+    if raw in ("none", "off", "false", "0", "disable", "disabled"):
+        return []
+    if raw:
+        items = [_normalize_style_key(x) for x in value.split(",") if x.strip()]
+        items = [i for i in items if i in IMAGE_STYLE_PRESETS]
+        if items:
+            return items
+    return [i for i in fallback if i in IMAGE_STYLE_PRESETS]
+
+def _style_pool_for(kind: str) -> List[str]:
+    if kind == "summary":
+        base_pool = _parse_style_pool(NEWS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+        return _parse_style_pool(NEWS_SUMMARY_IMAGE_STYLES, base_pool)
+    if kind == "channel":
+        return _parse_style_pool(CHANNEL_POSTS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+    return _parse_style_pool(NEWS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+
+def _pick_style(pool: List[str], last: str) -> str:
+    if not pool:
+        return ""
+    if len(pool) == 1:
+        return pool[0]
+    if last and last in pool:
+        choices = [p for p in pool if p != last]
+    else:
+        choices = pool
+    return random.choice(choices) if choices else pool[0]
+
+def _image_style_line(kind: str) -> str:
+    global _last_news_image_style, _last_summary_image_style, _last_channel_image_style
+    pool = _style_pool_for(kind)
+    if not pool:
+        return ""
+    if kind == "summary":
+        choice = _pick_style(pool, _last_summary_image_style)
+        _last_summary_image_style = choice
+    elif kind == "channel":
+        choice = _pick_style(pool, _last_channel_image_style)
+        _last_channel_image_style = choice
+    else:
+        choice = _pick_style(pool, _last_news_image_style)
+        _last_news_image_style = choice
+    style = IMAGE_STYLE_PRESETS.get(choice, "")
+    return f"Style: {style}." if style else ""
+
 def _news_image_prompt(title: str, summary: str) -> str:
     title = (title or "").strip()
     summary = (summary or "").strip()
@@ -2413,6 +2487,9 @@ def _news_image_prompt(title: str, summary: str) -> str:
         "If the news is serious/tragic, make it a sober editorial illustration. "
         "No graphic violence, no gore, no text overlays, no logos."
     )
+    style_line = _image_style_line("news")
+    if style_line:
+        base = base + " " + style_line
     return f"{base}\n\nTITLE: {title}\nSUMMARY: {summary}"
 
 def _caption_with_footer(text: str, chat_id: object = None, max_len: int = 1024) -> str:
@@ -2488,6 +2565,9 @@ def _summary_image_prompt(headlines: List[str], ai_text: str) -> str:
         "If the tone is grim/serious, make it a sober editorial illustration. "
         "No graphic violence, no gore, no text overlays, no logos."
     )
+    style_line = _image_style_line("summary")
+    if style_line:
+        base = base + " " + style_line
     extra = (ai_text or "").strip()
     if extra:
         extra = clip(extra, 800)
@@ -3850,6 +3930,9 @@ def _channel_post_image_prompt(topic: str, text: str) -> str:
         "communication readiness. Use a calm, clear visual style. No text overlays, no logos, no "
         "technical diagrams, no maps, no violence."
     )
+    style_line = _image_style_line("channel")
+    if style_line:
+        base = base + " " + style_line
     return f"{base}\n\nTOPIC: {topic}\nPOST: {summary}"
 
 async def _generate_channel_post_image(topic: str, text: str) -> Optional[bytes]:
