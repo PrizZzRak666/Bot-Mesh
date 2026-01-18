@@ -3867,6 +3867,51 @@ CHANNEL_CTA_VARIANTS = {
     ],
 }
 
+CHANNEL_CTA_TIME_VARIANTS = {
+    "uk": {
+        "morning": [
+            "☀️ Ранкова перевірка: збережи цей пост.",
+        ],
+        "evening": [
+            "🌙 Вечірня перевірка: збережи на завтра.",
+        ],
+    },
+    "en": {
+        "morning": [
+            "☀️ Morning check: save this post.",
+        ],
+        "evening": [
+            "🌙 Evening check: save it for tomorrow.",
+        ],
+    },
+}
+
+CHANNEL_HOOK_LINES = {
+    "uk": [
+        "Це займе менше хвилини.",
+        "Один крок зараз = менше стресу потім.",
+        "Зроби це сьогодні, щоб було легше завтра.",
+    ],
+    "en": [
+        "This takes under a minute.",
+        "One step now = less stress later.",
+        "Do it today to make tomorrow easier.",
+    ],
+}
+
+CHANNEL_HINT_VARIANTS = {
+    "uk": [
+        "Лайфхаки та важливі деталі:",
+        "Коротко і по справі:",
+        "Що зробити прямо зараз:",
+    ],
+    "en": [
+        "Lifehacks and key tips:",
+        "Short and practical:",
+        "Do this right now:",
+    ],
+}
+
 CHANNEL_LOW_VALUE_PHRASES = [
     "заспокойся",
     "слідкуй за інструкціями",
@@ -4974,9 +5019,14 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
     badge = _channel_badge_for_topic(title, lang)
+    time_badge = _channel_time_badge(_channel_now(), lang)
+    badge_line = " ".join([b for b in (time_badge, badge) if b])
+    hook = _channel_hook_line(lang)
     reason = _channel_reason_line(title, lang)
-    hint = "Лайфхаки та важливі деталі:" if lang == "uk" else "Lifehacks and key tips:"
-    lines = [badge, title] if badge else [title]
+    hint = _channel_hint_line(lang)
+    lines = [badge_line, title] if badge_line else [title]
+    if hook:
+        lines.append(hook)
     if reason:
         lines.append(reason)
     lines.extend(["", hint])
@@ -5011,6 +5061,13 @@ def _channel_badge_for_topic(topic: str, lang: str) -> str:
         return "✅ Статус" if lang == "uk" else "✅ Status"
     return ""
 
+def _channel_time_badge(now: datetime, lang: str) -> str:
+    if now.hour < 12:
+        return "☀️ Ранкова перевірка" if lang == "uk" else "☀️ Morning check"
+    if now.hour >= 18:
+        return "🌙 Вечірня перевірка" if lang == "uk" else "🌙 Evening check"
+    return ""
+
 def _channel_reason_line(topic: str, lang: str) -> str:
     t = (topic or "").strip().lower()
     if not t:
@@ -5025,8 +5082,22 @@ def _channel_reason_line(topic: str, lang: str) -> str:
         return "Навіщо: відсіяти зайве." if lang == "uk" else "Why: cut through noise."
     return "Навіщо: простий план без паніки." if lang == "uk" else "Why: a simple calm plan."
 
+def _channel_hook_line(lang: str) -> str:
+    if random.random() < 0.35:
+        return ""
+    variants = CHANNEL_HOOK_LINES.get(lang, CHANNEL_HOOK_LINES["uk"])
+    return random.choice(variants) if variants else ""
+
+def _channel_hint_line(lang: str) -> str:
+    variants = CHANNEL_HINT_VARIANTS.get(lang, CHANNEL_HINT_VARIANTS["uk"])
+    return random.choice(variants) if variants else ""
+
 def _channel_cta(lang: str) -> str:
-    variants = CHANNEL_CTA_VARIANTS.get(lang, CHANNEL_CTA_VARIANTS["uk"])
+    variants = list(CHANNEL_CTA_VARIANTS.get(lang, CHANNEL_CTA_VARIANTS["uk"]))
+    now = _channel_now()
+    time_bucket = "morning" if now.hour < 12 else "evening" if now.hour >= 18 else ""
+    if time_bucket:
+        variants.extend(CHANNEL_CTA_TIME_VARIANTS.get(lang, {}).get(time_bucket, []))
     return random.choice(variants) if variants else CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
 
 def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
