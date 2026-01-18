@@ -1,36 +1,36 @@
-CHANNEL WEEKLY PLAN (UA)
+ПЛАН КАНАЛУ НА ТИЖДЕНЬ (UA)
 
-Goal: 2 posts/day (10:00, 19:00). Rotate blocks to avoid repetition.
+Ціль: 2 пости/день (10:00, 19:00). Ротація блоків без повторів.
 
-Monday
-10:00  Lifehack of the day (Block 7)
-19:00  Scenario "If X -> do Y" (Block 2)
+Понеділок
+10:00  Лайфхак дня (Блок 7)
+19:00  Сценарій «Якщо Х → Роби Y» (Блок 2)
 
-Tuesday
-10:00  Myth/Fact (Block 4)
-19:00  Forward to close ones (Block 3)
+Вівторок
+10:00  Міф/Факт (Блок 4)
+19:00  Перешли близьким (Блок 3)
 
-Wednesday
-10:00  Explained simply (Block 6)
-19:00  Offline safety (Block 8)
+Середа
+10:00  Пояснюємо просто (Блок 6)
+19:00  Офлайн-безпека (Блок 8)
 
-Thursday
-10:00  60-second checklist (Block 1)
-19:00  Coordination & comms (Block 9)
+Четвер
+10:00  Чекліст на 60 секунд (Блок 1)
+19:00  Координація та звʼязок (Блок 9)
 
-Friday
-10:00  Readiness/status post (Block 5)
-19:00  Lifehack of the day (Block 7)
+Пʼятниця
+10:00  Статус/готовність (Блок 5)
+19:00  Лайфхак дня (Блок 7)
 
-Saturday
-10:00  Scenario (Block 2)
-19:00  Offline safety (Block 8)
+Субота
+10:00  Сценарій (Блок 2)
+19:00  Офлайн-безпека (Блок 8)
 
-Sunday
-10:00  Quiet presence reminder (quiet style)
-19:00  Weekly recap + one key action
+Неділя
+10:00  Тихе нагадування (quiet)
+19:00  Підсумок тижня + одна ключова дія
 
-Notes
-- Keep 5-7 actions per post; add 1-2 lifehacks when relevant.
-- Avoid repeating the same action within 48 hours.
-- Use consistent visual style presets for channel images.
+Нотатки
+- 5–7 дій у пості; 1–2 лайфхаки, якщо доречно.
+- Не повторювати дії частіше ніж раз на 48 годин.
+- Тримати єдиний візуальний стиль зображень.

@@ -1794,6 +1794,9 @@ BOT_PUBLIC_LINK = FOOTER_BOT_LINK
 CHANNEL_POSTS_ENABLED = env_bool("CHANNEL_POSTS_ENABLED", False)
 CHANNEL_POSTS_INTERVAL_SEC = env_int("CHANNEL_POSTS_INTERVAL_SEC", 3600)
 CHANNEL_POSTS_LANG = env("CHANNEL_POSTS_LANG", "uk").strip().lower()
+CHANNEL_POSTS_TZ = env("CHANNEL_POSTS_TZ", NEWS_SUMMARY_TZ)
+CHANNEL_POSTS_TIMES = env("CHANNEL_POSTS_TIMES", "").strip()
+CHANNEL_POSTS_USE_WEEKLY_PLAN = env_bool("CHANNEL_POSTS_USE_WEEKLY_PLAN", True)
 CHANNEL_POSTS_TOPICS_RAW = env("CHANNEL_POSTS_TOPICS", "").strip()
 CHANNEL_POSTS_TOPICS_FILE = env("CHANNEL_POSTS_TOPICS_FILE", "channel_topics.txt").strip()
 CHANNEL_POSTS_IMAGE_ENABLED = env_bool(
@@ -2433,6 +2436,15 @@ def _summary_tzinfo():
     except Exception:
         return timezone.utc
 
+def _channel_tzinfo():
+    try:
+        return ZoneInfo(CHANNEL_POSTS_TZ)
+    except Exception:
+        return timezone.utc
+
+def _channel_now() -> datetime:
+    return datetime.now(_channel_tzinfo())
+
 def _parse_summary_times(value: str) -> List[dt_time]:
     times: List[dt_time] = []
     for raw in (value or "").split(","):
@@ -2447,6 +2459,22 @@ def _parse_summary_times(value: str) -> List[dt_time]:
     if not times:
         times = [dt_time(8, 0), dt_time(14, 0), dt_time(20, 0)]
     tz = _summary_tzinfo()
+    return [t.replace(tzinfo=tz) for t in times]
+
+def _parse_channel_times(value: str) -> List[dt_time]:
+    times: List[dt_time] = []
+    for raw in (value or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            hh, mm = raw.split(":", 1)
+            times.append(dt_time(hour=int(hh), minute=int(mm)))
+        except Exception:
+            continue
+    if not times:
+        return []
+    tz = _channel_tzinfo()
     return [t.replace(tzinfo=tz) for t in times]
 
 def _footer_channel_link() -> str:
@@ -3786,6 +3814,18 @@ CHANNEL_DEFAULT_TOPICS = [
     "prepare",
 ]
 
+CHANNEL_DEFAULT_TOPICS_BY_BLOCK = {
+    "1": ["save_checklist", "prepare", "value_simple"],
+    "2": ["if_no_internet", "if_no_mobile", "if_not_home", "if_family"],
+    "3": ["forward_close"],
+    "4": ["not_news"],
+    "5": ["pinned"],
+    "6": ["value_simple"],
+    "7": ["prepare"],
+    "8": ["save_checklist"],
+    "9": ["if_family"],
+}
+
 CHANNEL_TOPIC_ALIASES = {
     "if_no_internet": "if_no_internet",
     "no_internet": "if_no_internet",
@@ -3802,6 +3842,7 @@ CHANNEL_TOPIC_ALIASES = {
     "forward_close": "forward_close",
     "forward": "forward_close",
     "quiet": "quiet",
+    "weekly_summary": "weekly_summary",
     "not_news": "not_news",
     "pinned": "pinned",
     "save_checklist": "save_checklist",
@@ -3909,6 +3950,36 @@ def _channel_topics_from_file() -> List[str]:
         topics.append(line)
     return topics
 
+_BLOCK_HEADER_RE = re.compile(r"блок\s*(\d+)", re.IGNORECASE)
+
+def _channel_topics_from_file_by_block() -> Dict[str, List[str]]:
+    if not CHANNEL_POSTS_TOPICS_FILE:
+        return {}
+    path = _resolve_path(CHANNEL_POSTS_TOPICS_FILE)
+    if not path.exists():
+        return {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        logger.exception("Failed to load channel topics file")
+        return {}
+    block = None
+    topics_by_block: Dict[str, List[str]] = {}
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        if raw.startswith("#") or raw.startswith("//") or raw.startswith(";"):
+            match = _BLOCK_HEADER_RE.search(raw)
+            if match:
+                block = match.group(1)
+            continue
+        if block:
+            topics_by_block.setdefault(block, []).append(raw)
+        else:
+            topics_by_block.setdefault("0", []).append(raw)
+    return topics_by_block
+
 def _channel_topics() -> List[str]:
     if CHANNEL_POSTS_TOPICS_RAW:
         items = [t.strip() for t in CHANNEL_POSTS_TOPICS_RAW.split(",") if t.strip()]
@@ -3918,6 +3989,44 @@ def _channel_topics() -> List[str]:
     if file_topics:
         return file_topics
     return CHANNEL_DEFAULT_TOPICS
+
+def _channel_topics_by_block() -> Dict[str, List[str]]:
+    topics_by_block = _channel_topics_from_file_by_block()
+    if topics_by_block:
+        return topics_by_block
+    return CHANNEL_DEFAULT_TOPICS_BY_BLOCK
+
+def _weekly_plan_slot(now: datetime) -> str:
+    morning = now.hour < 14
+    weekday = now.weekday()
+    schedule = {
+        0: ("7", "2"),  # Mon
+        1: ("4", "3"),  # Tue
+        2: ("6", "8"),  # Wed
+        3: ("1", "9"),  # Thu
+        4: ("5", "7"),  # Fri
+        5: ("2", "8"),  # Sat
+        6: ("quiet", "weekly_summary"),  # Sun
+    }
+    slot = schedule.get(weekday, ("1", "2"))
+    return slot[0] if morning else slot[1]
+
+def _pick_topic_from_list(topics: List[str]) -> str:
+    if not topics:
+        return "status"
+    global _channel_posts_index
+    start_idx = _channel_posts_index % len(topics)
+    for offset in range(len(topics)):
+        idx = (start_idx + offset) % len(topics)
+        candidate = topics[idx]
+        if not _topic_recently_used(candidate):
+            _channel_posts_index = start_idx + offset + 1
+            _save_channel_posts_state()
+            return candidate
+    chosen = topics[start_idx]
+    _channel_posts_index = start_idx + 1
+    _save_channel_posts_state()
+    return chosen
 
 def _normalize_channel_topic(raw: str) -> str:
     key = (raw or "").strip().lower()
@@ -4038,24 +4147,15 @@ def _save_channel_actions() -> None:
         logger.exception("Failed to save channel actions")
 
 def _next_channel_topic() -> str:
-    topics = _channel_topics()
-    if not topics:
-        return "status"
-    global _channel_posts_index
-    start_idx = _channel_posts_index % len(topics)
-    chosen = None
-    for offset in range(len(topics)):
-        idx = (start_idx + offset) % len(topics)
-        candidate = topics[idx]
-        if not _topic_recently_used(candidate):
-            chosen = candidate
-            _channel_posts_index = start_idx + offset + 1
-            _save_channel_posts_state()
-            return chosen
-    chosen = topics[start_idx]
-    _channel_posts_index = start_idx + 1
-    _save_channel_posts_state()
-    return chosen
+    if CHANNEL_POSTS_USE_WEEKLY_PLAN:
+        slot = _weekly_plan_slot(_channel_now())
+        if slot in ("quiet", "weekly_summary"):
+            return slot
+        topics_by_block = _channel_topics_by_block()
+        block_topics = topics_by_block.get(slot, [])
+        if block_topics:
+            return _pick_topic_from_list(block_topics)
+    return _pick_topic_from_list(_channel_topics())
 
 _load_channel_posts_state()
 _load_channel_topics_history()
@@ -4829,8 +4929,9 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     title = (topic or "").strip()
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
+    badge = _channel_badge_for_topic(title, lang)
     hint = "Лайфхаки та важливі деталі:" if lang == "uk" else "Lifehacks and key tips:"
-    lines = [title, "", hint]
+    lines = [badge, title, "", hint] if badge else [title, "", hint]
     for idx, action in enumerate(actions, 1):
         lines.append(f"{idx}) {action}")
     lines.append("")
@@ -4839,6 +4940,28 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     if _normalize_channel_topic(topic) == "pinned" or any(k in t for k in ("вхідна", "вход", "закреп", "entry point", "pinned")):
         lines.append(_channel_bot_line(lang))
     return "\n".join(lines).strip()
+
+def _channel_badge_for_topic(topic: str, lang: str) -> str:
+    t = (topic or "").strip().lower()
+    if not t:
+        return ""
+    if "лайфхак" in t or "lifehack" in t:
+        return "⚡️ Лайфхак дня" if lang == "uk" else "⚡️ Lifehack of the day"
+    if t.startswith(("якщо", "если", "if ")):
+        return "🧭 Сценарій" if lang == "uk" else "🧭 Scenario"
+    if t.startswith(("чому", "почему", "why", "міф", "миф", "myth")):
+        return "🧪 Міф/Факт" if lang == "uk" else "🧪 Myth/Fact"
+    if "перешли" in t or "forward" in t:
+        return "📣 Перешли близьким" if lang == "uk" else "📣 Forward to close ones"
+    if "офлайн" in t or "offline" in t:
+        return "🧰 Офлайн-безпека" if lang == "uk" else "🧰 Offline safety"
+    if "координац" in t or "coordination" in t:
+        return "🧭 Координація" if lang == "uk" else "🧭 Coordination"
+    if "підсумок тижня" in t or "weekly recap" in t:
+        return "🗓️ Підсумок тижня" if lang == "uk" else "🗓️ Weekly recap"
+    if "система активна" in t or "system active" in t:
+        return "✅ Статус" if lang == "uk" else "✅ Status"
+    return ""
 
 def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
     if not text or _channel_is_low_value(text):
@@ -4855,6 +4978,12 @@ def _channel_titled_post(title: str, lines: List[str], cta: Optional[str] = None
 
 def _channel_topic_prompt(topic: str, lang: str) -> str:
     key = _normalize_channel_topic(topic)
+    if key == "weekly_summary":
+        return _channel_checklist_prompt(
+            "Підсумок тижня: одна ключова дія",
+            "Weekly recap: one key action",
+            lang,
+        )
     if key == "if_no_internet":
         return _channel_checklist_prompt(
             "Як діяти, якщо немає інтернету",
@@ -7010,8 +7139,13 @@ async def post_init(application):
             application.job_queue.run_daily(news_summary_job, time=t)
     if ua_alarm_enabled():
         application.job_queue.run_repeating(alerts_job, interval=UA_ALARM_POLL_SEC, first=5)
-    if CHANNEL_POSTS_ENABLED and CHANNEL_POSTS_INTERVAL_SEC > 0:
-        application.job_queue.run_repeating(channel_posts_job, interval=CHANNEL_POSTS_INTERVAL_SEC, first=30)
+    if CHANNEL_POSTS_ENABLED:
+        channel_times = _parse_channel_times(CHANNEL_POSTS_TIMES)
+        if channel_times:
+            for t in channel_times:
+                application.job_queue.run_daily(channel_posts_job, time=t)
+        elif CHANNEL_POSTS_INTERVAL_SEC > 0:
+            application.job_queue.run_repeating(channel_posts_job, interval=CHANNEL_POSTS_INTERVAL_SEC, first=30)
     if MEME_POSTS_ENABLED and MEME_POSTS_INTERVAL_SEC > 0:
         application.job_queue.run_repeating(meme_job, interval=MEME_POSTS_INTERVAL_SEC, first=60)
 
