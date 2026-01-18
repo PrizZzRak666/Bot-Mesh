@@ -4975,6 +4975,9 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "май трохи готівки": "Май трохи готівки",
         "домовся про кодове слово": "Домовся про кодове слово",
         "визнач одну точку зустрічі": "Визнач одну точку зустрічі",
+        "перевір два джерела перед репостом": "Перевір два джерела перед репостом",
+        "не поширюй непідтверджене": "Не поширюй непідтверджене",
+        "збережи офіційні контакти офлайн": "Збережи офіційні контакти офлайн",
     }
     mapping_en = {
         "prepare a power bank and cable": "Prepare a power bank and cable",
@@ -4997,11 +5000,17 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "keep a bit of cash": "Keep a bit of cash",
         "agree on a code word": "Agree on a code word",
         "pick one meeting point": "Pick one meeting point",
+        "check two sources before sharing": "Check two sources before sharing",
+        "avoid forwarding unverified info": "Avoid forwarding unverified info",
+        "save official contacts offline": "Save official contacts offline",
     }
     mapping = mapping_uk if lang == "uk" else mapping_en
     return [mapping.get(h, h) for h in hints]
 
 def _channel_required_groups(topic: str, lang: str) -> List[str]:
+    key = _normalize_channel_topic(topic)
+    if key == "ten_minute_pack":
+        return ["docs", "water", "cash", "power"]
     t = _topic_lower(topic)
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
     special: List[str] = []
@@ -5047,6 +5056,12 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
     key = _normalize_channel_topic(topic)
     hints: List[str] = []
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    if key == "trust_status":
+        hints.extend([
+            "перевір два джерела перед репостом" if lang == "uk" else "check two sources before sharing",
+            "не поширюй непідтверджене" if lang == "uk" else "avoid forwarding unverified info",
+            "збережи офіційні контакти офлайн" if lang == "uk" else "save official contacts offline",
+        ])
     if key == "kids_parents":
         hints.extend([
             "запиши контакти для дітей" if lang == "uk" else "write key contacts for kids",
@@ -5369,6 +5384,12 @@ def _channel_badge_for_topic(topic: str, lang: str) -> str:
     t = (topic or "").strip().lower()
     if not t:
         return ""
+    if any(k in t for k in ("довір", "trust", "статус")):
+        return "🛡️ Довіра" if lang == "uk" else "🛡️ Trust"
+    if any(k in t for k in ("10 хв", "10-minute", "10 minute", "набір", "kit")):
+        return "🧰 10 хвилин" if lang == "uk" else "🧰 10-minute kit"
+    if any(k in t for k in ("батьк", "parents", "kids")):
+        return "👨‍👩‍👧 Для батьків" if lang == "uk" else "👨‍👩‍👧 For parents"
     if "лайфхак" in t or "lifehack" in t:
         return "⚡️ Лайфхак дня" if lang == "uk" else "⚡️ Lifehack of the day"
     if t.startswith(("якщо", "если", "if ")):
@@ -5446,6 +5467,12 @@ def _channel_reason_line(topic: str, lang: str) -> str:
     t = (topic or "").strip().lower()
     if not t:
         return ""
+    if any(k in t for k in ("довір", "trust", "статус")):
+        return "Навіщо: менше чуток і паніки." if lang == "uk" else "Why: less noise and rumors."
+    if any(k in t for k in ("10 хв", "10-minute", "10 minute", "набір", "kit")):
+        return "Навіщо: готовність за 10 хвилин." if lang == "uk" else "Why: ready in 10 minutes."
+    if any(k in t for k in ("батьк", "parents", "kids", "діт", "дитин")):
+        return "Навіщо: звʼязок з дітьми." if lang == "uk" else "Why: stay in touch with kids."
     if any(k in t for k in ("заряд", "батар", "power", "battery", "phone", "телефон")):
         return "Навіщо: більше часу на звʼязок." if lang == "uk" else "Why: more time for connection."
     if any(k in t for k in ("звʼязок", "message", "contact", "повідом")):
