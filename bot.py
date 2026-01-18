@@ -1799,6 +1799,7 @@ CHANNEL_POSTS_TIMES = env("CHANNEL_POSTS_TIMES", "").strip()
 CHANNEL_POSTS_USE_WEEKLY_PLAN = env_bool("CHANNEL_POSTS_USE_WEEKLY_PLAN", True)
 CHANNEL_POSTS_TONE = env("CHANNEL_POSTS_TONE", "auto").strip().lower()
 CHANNEL_HOOK_CHANCE = env_float("CHANNEL_HOOK_CHANCE", 0.35)
+CHANNEL_TITLE_VARIANT_CHANCE = env_float("CHANNEL_TITLE_VARIANT_CHANCE", 0.4)
 CHANNEL_POSTS_TOPICS_RAW = env("CHANNEL_POSTS_TOPICS", "").strip()
 CHANNEL_POSTS_TOPICS_FILE = env("CHANNEL_POSTS_TOPICS_FILE", "channel_topics.txt").strip()
 CHANNEL_POSTS_IMAGE_ENABLED = env_bool(
@@ -4565,14 +4566,14 @@ def _channel_quiet_prompt(lang: str) -> str:
         return (
             "Пост у стилі «тихе присутність».\n"
             "Почни рядком: Нічого робити не потрібно. Просто збережи.\n"
-            "Додай 5–7 коротких ПРАКТИЧНИХ дій (наприклад: перевір заряд).\n"
+            "Додай 3–5 коротких ПРАКТИЧНИХ дій (наприклад: перевір заряд).\n"
             "Без емоцій і без загальних фраз.\n\n"
             + _channel_prompt_requirements("тихе присутність", lang)
         )
     return (
         "A quiet-presence post.\n"
         "Start with: No action is needed. Just save this.\n"
-        "Add 5–7 short PRACTICAL actions (e.g., check battery).\n"
+        "Add 3–5 short PRACTICAL actions (e.g., check battery).\n"
         "No emotions and no vague phrases.\n\n"
         + _channel_prompt_requirements("quiet presence", lang)
     )
@@ -4761,6 +4762,7 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
     recent = set(_channel_recent_actions)
     used: Set[str] = set()
     actions: List[str] = []
+    min_actions, max_actions = _channel_action_limits(topic, lang)
 
     for group in required_groups:
         options = list(required_map.get(group, []))
@@ -4778,7 +4780,7 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
     random.shuffle(lifehacks)
     lifehack_added = 0
     for hack in lifehacks:
-        if lifehack_added >= 2 or len(actions) >= 7:
+        if lifehack_added >= 2 or len(actions) >= max_actions:
             break
         norm = _normalize_action_line(hack)
         if not norm or norm in used or norm in recent:
@@ -4793,7 +4795,7 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
     extras = _channel_topic_extra_action_templates(topic, lang)
     random.shuffle(extras)
     for extra in extras:
-        if len(actions) >= 7:
+        if len(actions) >= max_actions:
             break
         norm = _normalize_action_line(extra)
         if not norm or norm in used or norm in recent:
@@ -4807,7 +4809,7 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
     pool = _channel_generic_action_templates(lang)
     random.shuffle(pool)
     for act in pool:
-        if len(actions) >= 7:
+        if len(actions) >= max_actions:
             break
         norm = _normalize_action_line(act)
         if not norm or norm in used or norm in recent:
@@ -4818,9 +4820,9 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
         actions.append(act)
         used.add(norm)
 
-    if len(actions) < 5:
+    if len(actions) < min_actions:
         for act in extras + pool:
-            if len(actions) >= 5:
+            if len(actions) >= min_actions:
                 break
             norm = _normalize_action_line(act)
             if not norm or norm in used:
@@ -4831,8 +4833,8 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
             actions.append(act)
             used.add(norm)
 
-    if len(actions) > 7:
-        actions = actions[:7]
+    if len(actions) > max_actions:
+        actions = actions[:max_actions]
     return actions
 
 def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
@@ -4968,10 +4970,12 @@ def _channel_prompt_requirements(topic: str, lang: str) -> str:
     recent = "; ".join(list(_channel_recent_actions)[-6:])
     word_min = max(1, CHANNEL_POSTS_ACTION_MIN_WORDS)
     word_max = max(word_min, CHANNEL_POSTS_ACTION_MAX_WORDS)
+    min_actions, max_actions = _channel_action_limits(topic, lang)
     if lang == "uk":
         lines = [
             f"Обовʼязково включи дії про: {required}.",
             f"Кожен рядок = дія, починай дієсловом, {word_min}-{word_max} слів.",
+            f"Кількість пунктів: {min_actions}-{max_actions}.",
         ]
         if recent:
             lines.append("Не повторюй такі дії: " + recent + ".")
@@ -4981,6 +4985,7 @@ def _channel_prompt_requirements(topic: str, lang: str) -> str:
         lines = [
             f"Mandatory actions: {required}.",
             f"Each line must start with a verb and be {word_min}-{word_max} words.",
+            f"Number of items: {min_actions}-{max_actions}.",
         ]
         if recent:
             lines.append("Avoid repeating these actions: " + recent + ".")
@@ -5023,7 +5028,8 @@ def _channel_validate_actions(actions: List[str], topic: str, lang: str) -> bool
     if not actions:
         logger.debug("Channel post validation failed: no actions topic=%s lang=%s", topic, lang)
         return False
-    if not (5 <= len(actions) <= 7):
+    min_actions, max_actions = _channel_action_limits(topic, lang)
+    if not (min_actions <= len(actions) <= max_actions):
         logger.debug(
             "Channel post validation failed: bad action count=%s topic=%s lang=%s",
             len(actions),
@@ -5097,6 +5103,7 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
     cleaned: List[str] = []
     seen: Set[str] = set()
     recent = set(_channel_recent_actions)
+    min_actions, max_actions = _channel_action_limits(topic, lang)
     for action in source_actions:
         action = (action or "").strip()
         if not action or _channel_is_low_value(action):
@@ -5124,7 +5131,7 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
             seen.add(_normalize_action_line(pick))
 
     for extra in _channel_topic_extra_action_templates(topic, lang):
-        if len(cleaned) >= 7:
+        if len(cleaned) >= max_actions:
             break
         norm = _normalize_action_line(extra)
         if not norm or norm in seen or norm in recent:
@@ -5132,9 +5139,9 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
         cleaned.append(extra)
         seen.add(norm)
 
-    if len(cleaned) < 5:
+    if len(cleaned) < min_actions:
         for filler in _channel_generic_action_templates(lang):
-            if len(cleaned) >= 5:
+            if len(cleaned) >= min_actions:
                 break
             norm = _normalize_action_line(filler)
             if not norm or norm in seen or norm in recent:
@@ -5142,7 +5149,7 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
             cleaned.append(filler)
             seen.add(norm)
 
-    if len(cleaned) > 7:
+    if len(cleaned) > max_actions:
         required_groups = _channel_required_groups(topic, lang)
         prioritized: List[str] = []
         remaining = list(cleaned)
@@ -5154,15 +5161,15 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
                     remaining.remove(action)
                     break
         for action in remaining:
-            if len(prioritized) >= 7:
+            if len(prioritized) >= max_actions:
                 break
             prioritized.append(action)
-        cleaned = prioritized[:7]
+        cleaned = prioritized[:max_actions]
 
     return cleaned
 
 def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> str:
-    title = (topic or "").strip()
+    title = _channel_title_variant(topic, lang) or (topic or "").strip()
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
     badge = _channel_badge_for_topic(title, lang)
@@ -5204,6 +5211,8 @@ def _channel_badge_for_topic(topic: str, lang: str) -> str:
         return "🧭 Координація" if lang == "uk" else "🧭 Coordination"
     if "підсумок тижня" in t or "weekly recap" in t:
         return "🗓️ Підсумок тижня" if lang == "uk" else "🗓️ Weekly recap"
+    if "тих" in t or "quiet" in t:
+        return "🕊️ Тихе нагадування" if lang == "uk" else "🕊️ Quiet reminder"
     if "система активна" in t or "system active" in t:
         return "✅ Статус" if lang == "uk" else "✅ Status"
     return ""
@@ -5225,6 +5234,39 @@ def _channel_tone(lang: str) -> str:
     if now.hour >= 18:
         return "calm, reassuring, practical" if lang == "en" else "спокійний, підтримуючий, практичний"
     return "direct, concise, practical" if lang == "en" else "чіткий, лаконічний, практичний"
+
+def _channel_action_limits(topic: str, lang: str) -> tuple[int, int]:
+    key = _normalize_channel_topic(topic)
+    t = _topic_lower(topic)
+    if key in ("quiet", "weekly_summary") or "тих" in t or "quiet" in t:
+        return 3, 5
+    return 5, 7
+
+def _channel_title_variant(topic: str, lang: str) -> str:
+    title = (topic or "").strip()
+    if not title or random.random() > CHANNEL_TITLE_VARIANT_CHANCE:
+        return title
+    if lang == "uk":
+        if title.startswith("Як "):
+            return random.choice([f"Швидко: {title[3:]}", f"Коротко: {title[3:]}", f"За хвилину: {title[3:]}"])
+        if title.startswith("Що "):
+            return random.choice([f"Коротко: {title}", f"Памʼятай: {title}"])
+        if title.startswith("Чому "):
+            return random.choice([f"Міф/факт: {title[5:]}", f"Просте пояснення: {title[5:]}"])
+        if title.startswith("Якщо "):
+            return random.choice([f"Сценарій: {title}", f"Коли так, дій так: {title[5:]}"])
+        return random.choice([title, f"Коротко: {title}"])
+    if title.lower().startswith("how "):
+        base = title[4:]
+        return random.choice([f"Quick: {base}", f"In a minute: {base}", f"Short: {base}"])
+    if title.lower().startswith("what "):
+        return random.choice([f"Quick: {title}", f"Remember: {title}"])
+    if title.lower().startswith("why "):
+        base = title[4:]
+        return random.choice([f"Myth/Fact: {base}", f"Simple: {base}"])
+    if title.lower().startswith("if "):
+        return random.choice([f"Scenario: {title}", f"If this, do that: {title[3:]}"])
+    return random.choice([title, f"Quick: {title}"])
 
 def _channel_reason_line(topic: str, lang: str) -> str:
     t = (topic or "").strip().lower()
