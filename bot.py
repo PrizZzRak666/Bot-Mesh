@@ -1,4 +1,5 @@
 import os
+import atexit
 import time
 import secrets
 import asyncio
@@ -38,6 +39,12 @@ from telegram.ext import (
 # =========================
 # ENV helpers
 # =========================
+BASE_DIR = Path(__file__).resolve().parent
+
+def _resolve_path(path_value: str) -> Path:
+    path = Path(path_value)
+    return path if path.is_absolute() else BASE_DIR / path
+
 def env(name: str, default: str = "") -> str:
     v = os.getenv(name)
     return v if v is not None else default
@@ -75,6 +82,57 @@ logger = logging.getLogger("bot")
 # =========================
 BOT_TOKEN = need("BOT_TOKEN")
 ADMIN_ID = int(need("ADMIN_ID"))
+
+# =========================
+# Instance lock (avoid multiple pollers)
+# =========================
+INSTANCE_LOCK_PATH = env("INSTANCE_LOCK_PATH", "data/bot.lock")
+INSTANCE_LOCK_ENABLED = env_bool("INSTANCE_LOCK_ENABLED", True)
+_instance_lock_handle = None
+
+def _acquire_instance_lock() -> None:
+    global _instance_lock_handle
+    if not INSTANCE_LOCK_ENABLED:
+        logger.info("Instance lock disabled")
+        return
+    lock_path = _resolve_path(INSTANCE_LOCK_PATH)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.exception("Failed to prepare lock directory: %s", lock_path.parent)
+        return
+    try:
+        import fcntl
+    except Exception:
+        logger.warning("Instance lock unavailable (fcntl not supported)")
+        return
+    try:
+        handle = open(lock_path, "a+")
+    except Exception:
+        logger.exception("Failed to open lock file: %s", lock_path)
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.error("Another bot instance is already running (lock: %s)", lock_path)
+        raise SystemExit(1)
+    except Exception:
+        logger.exception("Failed to acquire instance lock: %s", lock_path)
+        handle.close()
+        return
+    _instance_lock_handle = handle
+
+    def _release_lock() -> None:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+    atexit.register(_release_lock)
 
 # =========================
 # Language policy: replies only UA/EN (never RU)
@@ -194,6 +252,7 @@ async def ask_ai(user_id: int, text: str, mode: str = "faq") -> str:
                 model=AI_MODEL,
                 instructions=ai_instructions(user_id, mode),
                 input=safe_text,
+                timeout=AI_TIMEOUT_SEC,
             ),
             timeout=AI_TIMEOUT_SEC,
         )
@@ -1648,6 +1707,7 @@ RSS_FEEDS = [u.strip() for u in env("RSS_FEEDS", "").split(",") if u.strip()]
 URGENT_KEYWORDS = [k.strip() for k in env("NEWS_URGENT_KEYWORDS", "").split(",") if k.strip()]
 NEWS_SUMMARY_MAX_CHARS = env_int("NEWS_SUMMARY_MAX_CHARS", 2000)
 NEWS_AI_TIMEOUT_SEC = env_int("NEWS_AI_TIMEOUT_SEC", 20)
+NEWS_AI_SCORE_BUDGET_SEC = env_int("NEWS_AI_SCORE_BUDGET_SEC", max(10, NEWS_POLL_SEC - 60))
 NEWS_USE_KEYWORDS = env_bool("NEWS_USE_KEYWORDS", False)
 NEWS_FALLBACK_KEYWORDS = env_bool("NEWS_FALLBACK_KEYWORDS", True)
 NEWS_AI_FILTER_ENABLED = env_bool("NEWS_AI_FILTER_ENABLED", False)
@@ -1736,7 +1796,10 @@ CHANNEL_POSTS_INTERVAL_SEC = env_int("CHANNEL_POSTS_INTERVAL_SEC", 3600)
 CHANNEL_POSTS_LANG = env("CHANNEL_POSTS_LANG", "uk").strip().lower()
 CHANNEL_POSTS_TOPICS_RAW = env("CHANNEL_POSTS_TOPICS", "").strip()
 CHANNEL_POSTS_TOPICS_FILE = env("CHANNEL_POSTS_TOPICS_FILE", "channel_topics.txt").strip()
-CHANNEL_POSTS_IMAGE_ENABLED = env_bool("CHANNEL_POSTS_IMAGE_ENABLED", False)
+CHANNEL_POSTS_IMAGE_ENABLED = env_bool(
+    "CHANNEL_POSTS_IMAGE_ENABLED",
+    env_bool("NEWS_IMAGE_ENABLED", False),
+)
 CHANNEL_POSTS_IMAGE_MODEL = env("CHANNEL_POSTS_IMAGE_MODEL", "gpt-image-1")
 CHANNEL_POSTS_IMAGE_SIZE = env("CHANNEL_POSTS_IMAGE_SIZE", "1024x1024")
 CHANNEL_POSTS_IMAGE_TIMEOUT_SEC = env_int("CHANNEL_POSTS_IMAGE_TIMEOUT_SEC", 20)
@@ -2215,6 +2278,7 @@ async def ai_contact_triage(user_id: int, question: str) -> Optional[Dict[str, o
                 model=AI_MODEL,
                 instructions=instructions,
                 input=(question or "").strip()[:AI_INPUT_MAX_CHARS],
+                timeout=AI_TIMEOUT_SEC,
             ),
             timeout=AI_TIMEOUT_SEC,
         )
@@ -2281,6 +2345,7 @@ async def ai_news_scores(title: str, summary: str) -> Optional[Dict[str, int]]:
                 model=AI_MODEL,
                 instructions=instructions,
                 input=input_text,
+                timeout=NEWS_AI_TIMEOUT_SEC,
             ),
             timeout=NEWS_AI_TIMEOUT_SEC,
         )
@@ -2324,6 +2389,7 @@ async def ai_news_bullets(title: str, summary: str) -> str:
                 model=AI_MODEL,
                 instructions=instructions,
                 input=f"{safe_title}\n{safe_summary}",
+                timeout=NEWS_AI_TIMEOUT_SEC,
             ),
             timeout=NEWS_AI_TIMEOUT_SEC,
         )
@@ -3414,7 +3480,16 @@ async def _news_job_inner(context: ContextTypes.DEFAULT_TYPE):
             candidates = candidates[:NEWS_AI_MAX_CANDIDATES]
 
         scored: List[tuple[float, Dict[str, object], Dict[str, int]]] = []
-        for item in candidates:
+        ai_start = time.monotonic()
+        for idx, item in enumerate(candidates):
+            if NEWS_AI_SCORE_BUDGET_SEC > 0 and (time.monotonic() - ai_start) > NEWS_AI_SCORE_BUDGET_SEC:
+                logger.warning(
+                    "AI scoring budget exceeded; skipped %s candidates",
+                    len(candidates) - idx,
+                )
+                for rest in candidates[idx:]:
+                    _record_news_skip("ai_budget", rest["title"], rest["summary"], rest.get("feed_url") or "")
+                break
             ai_scores = await ai_news_scores(item["title"], item["summary"])
             if not ai_scores:
                 if NEWS_AI_STRICT:
@@ -3622,6 +3697,7 @@ async def _ai_news_summary(items: List[Dict[str, object]]) -> str:
                 model=AI_MODEL,
                 instructions=instructions,
                 input=input_text,
+                timeout=NEWS_AI_TIMEOUT_SEC,
             ),
             timeout=NEWS_AI_TIMEOUT_SEC,
         )
@@ -3801,12 +3877,12 @@ CHANNEL_REQUIRED_ACTION_HINTS = {
     ],
 }
 
-CHANNEL_POSTS_STATE_FILE = Path("data/channel_posts_state.json")
+CHANNEL_POSTS_STATE_FILE = _resolve_path(env("CHANNEL_POSTS_STATE_FILE", "data/channel_posts_state.json"))
 _channel_posts_index = 0
 _channel_posts_images_disabled_until = 0.0
-CHANNEL_POSTS_ACTIONS_FILE = Path("data/channel_posts_actions.json")
+CHANNEL_POSTS_ACTIONS_FILE = _resolve_path(env("CHANNEL_POSTS_ACTIONS_FILE", "data/channel_posts_actions.json"))
 _channel_recent_actions: deque[str] = deque()
-CHANNEL_POSTS_TOPICS_HISTORY_FILE = Path("data/channel_posts_topics.json")
+CHANNEL_POSTS_TOPICS_HISTORY_FILE = _resolve_path(env("CHANNEL_POSTS_TOPICS_HISTORY_FILE", "data/channel_posts_topics.json"))
 _channel_recent_topics: deque[Dict[str, object]] = deque()
 
 def _channel_post_lang() -> str:
@@ -3815,7 +3891,7 @@ def _channel_post_lang() -> str:
 def _channel_topics_from_file() -> List[str]:
     if not CHANNEL_POSTS_TOPICS_FILE:
         return []
-    path = Path(CHANNEL_POSTS_TOPICS_FILE)
+    path = _resolve_path(CHANNEL_POSTS_TOPICS_FILE)
     if not path.exists():
         return []
     try:
@@ -4363,6 +4439,70 @@ def _channel_generic_action_templates(lang: str) -> List[str]:
         "Check your phone battery",
         "Limit background updates",
     ]
+
+def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
+    required_groups = _channel_required_groups(topic)
+    required_map = _channel_required_action_templates(lang)
+    recent = set(_channel_recent_actions)
+    used: Set[str] = set()
+    actions: List[str] = []
+
+    for group in required_groups:
+        options = list(required_map.get(group, []))
+        if not options:
+            continue
+        random.shuffle(options)
+        picked = _pick_action(options, used, recent)
+        if not picked:
+            picked = _pick_action(options, used, set())
+        if picked:
+            actions.append(picked)
+            used.add(_normalize_action_line(picked))
+
+    extras = _channel_topic_extra_action_templates(topic, lang)
+    random.shuffle(extras)
+    for extra in extras:
+        if len(actions) >= 7:
+            break
+        norm = _normalize_action_line(extra)
+        if not norm or norm in used or norm in recent:
+            continue
+        words = _action_word_count(extra)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            continue
+        actions.append(extra)
+        used.add(norm)
+
+    pool = _channel_generic_action_templates(lang)
+    random.shuffle(pool)
+    for act in pool:
+        if len(actions) >= 7:
+            break
+        norm = _normalize_action_line(act)
+        if not norm or norm in used or norm in recent:
+            continue
+        words = _action_word_count(act)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            continue
+        actions.append(act)
+        used.add(norm)
+
+    if len(actions) < 5:
+        for act in extras + pool:
+            if len(actions) >= 5:
+                break
+            norm = _normalize_action_line(act)
+            if not norm or norm in used:
+                continue
+            words = _action_word_count(act)
+            if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+                continue
+            actions.append(act)
+            used.add(norm)
+
+    if len(actions) > 7:
+        actions = actions[:7]
+    return actions
 
 def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
     hints = _channel_topic_extra_hints(topic, lang)
@@ -5017,7 +5157,12 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
             ]
         arrow = " → ".join(steps)
         return _channel_titled_post(f"🧭 {theme}", [arrow], cta)
-    return _channel_post_fallback("save_checklist", lang).replace("Коротка інструкція на випадок збою звʼязку", theme).replace(
+    actions = _channel_fallback_actions(theme, lang)
+    if actions and _channel_validate_actions(actions, theme, lang):
+        return _channel_format_actions_post(theme, actions, lang)
+    return _channel_post_fallback("save_checklist", lang).replace(
+        "Коротка інструкція на випадок збою звʼязку", theme
+    ).replace(
         "Quick checklist for a comms outage", theme
     )
 
@@ -5031,6 +5176,7 @@ async def _ai_channel_post(prompt: str, lang: str) -> str:
                 model=AI_MODEL,
                 instructions=_channel_ai_instructions(lang),
                 input=prompt,
+                timeout=AI_TIMEOUT_SEC,
             ),
             timeout=AI_TIMEOUT_SEC,
         )
@@ -6655,6 +6801,7 @@ async def post_init(application):
 # main
 # =========================
 def main():
+    _acquire_instance_lock()
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
