@@ -3854,6 +3854,19 @@ CHANNEL_CTA_TEXT = {
     "en": "🔁 Save this and forward to close ones.",
 }
 
+CHANNEL_CTA_VARIANTS = {
+    "uk": [
+        "🔁 Збережи собі та перешли близьким.",
+        "✅ Збережи цей пост. Перешли тим, кому важливо.",
+        "📌 Збережи та поділись одним кліком.",
+    ],
+    "en": [
+        "🔁 Save this and forward to close ones.",
+        "✅ Save this post and share it with someone who needs it.",
+        "📌 Save and share in one tap.",
+    ],
+}
+
 CHANNEL_LOW_VALUE_PHRASES = [
     "заспокойся",
     "слідкуй за інструкціями",
@@ -3884,6 +3897,11 @@ CHANNEL_ACTION_KEYWORDS = {
         "long_outage": ["6 год", "6год", "доб", "доба", "сут"],
         "only_one": ["лише у одного", "одна людина", "один телефон", "координатор"],
         "not_tech": ["не розбира", "не в темі"],
+        "docs": ["документ", "паспорт", "копі", "довідк"],
+        "water": ["вода", "їжа", "продукт", "запас"],
+        "heat": ["тепл", "гріти", "ковдр", "свіч", "обігр"],
+        "maps": ["карта", "маршрут", "навігац", "offline map", "офлайн-карт"],
+        "cash": ["готів", "гроші", "картк", "гривн"],
     },
     "en": {
         "power": ["battery", "charge", "power saving", "power bank"],
@@ -3900,6 +3918,11 @@ CHANNEL_ACTION_KEYWORDS = {
         "long_outage": ["6 hours", "24 hours", "one day", "a day"],
         "only_one": ["only one", "one person", "coordinator"],
         "not_tech": ["not technical", "not tech", "not into"],
+        "docs": ["document", "passport", "copy", "id"],
+        "water": ["water", "food", "supplies", "rations"],
+        "heat": ["heat", "warm", "blanket", "candle", "heater"],
+        "maps": ["map", "route", "navigation", "offline map"],
+        "cash": ["cash", "money", "cards"],
     },
 }
 
@@ -4276,7 +4299,7 @@ async def _generate_channel_post_image(topic: str, text: str) -> Optional[bytes]
 
 def _channel_checklist_prompt(title_uk: str, title_en: str, lang: str) -> str:
     title = title_uk if lang == "uk" else title_en
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if lang == "uk":
         return (
             "Напиши короткий пост-інструкцію.\n"
@@ -4334,7 +4357,7 @@ def _channel_auto_mode(topic: str) -> str:
     return "checklist"
 
 def _channel_scenario_prompt(title: str, lang: str) -> str:
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if lang == "uk":
         return (
             "Напиши сценарний пост.\n"
@@ -4356,7 +4379,7 @@ def _channel_scenario_prompt(title: str, lang: str) -> str:
     )
 
 def _channel_explain_prompt(title: str, lang: str) -> str:
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if lang == "uk":
         return (
             "Напиши короткий пояснювальний пост.\n"
@@ -4380,7 +4403,7 @@ def _channel_explain_prompt(title: str, lang: str) -> str:
     )
 
 def _channel_myth_prompt(title: str, lang: str) -> str:
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if lang == "uk":
         return (
             "Напиши пост «розвінчання міфу» як інструкцію.\n"
@@ -4402,7 +4425,7 @@ def _channel_myth_prompt(title: str, lang: str) -> str:
     )
 
 def _channel_forward_prompt(title: str, lang: str) -> str:
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if lang == "uk":
         return (
             f"Заголовок: {title}\n"
@@ -4672,6 +4695,11 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "заряджай від ноутбука через usb": "Заряджай від ноутбука через USB",
         "підготуй ліхтарик на батарейках": "Підготуй ліхтарик на батарейках",
         "використай led-лампу замість екрана": "Використай LED-лампу замість екрана",
+        "збережи копії документів офлайн": "Збережи копії документів офлайн",
+        "зроби запас води на 24 години": "Зроби запас води на 24 години",
+        "підготуй ковдру і теплий одяг": "Підготуй ковдру і теплий одяг",
+        "збережи офлайн-карти": "Збережи офлайн-карти",
+        "май трохи готівки": "Май трохи готівки",
     }
     mapping_en = {
         "prepare a power bank and cable": "Prepare a power bank and cable",
@@ -4687,6 +4715,11 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "charge via a laptop usb port": "Charge via a laptop USB port",
         "keep a battery flashlight ready": "Keep a battery flashlight ready",
         "use an led lamp instead of the screen": "Use an LED lamp instead of the screen",
+        "save offline copies of documents": "Save offline copies of documents",
+        "prepare water for 24 hours": "Prepare water for 24 hours",
+        "prepare blankets and warm clothes": "Prepare blankets and warm clothes",
+        "save offline maps": "Save offline maps",
+        "keep a bit of cash": "Keep a bit of cash",
     }
     mapping = mapping_uk if lang == "uk" else mapping_en
     return [mapping.get(h, h) for h in hints]
@@ -4708,6 +4741,7 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
         hints.append("використай led-лампу замість екрана" if lang == "uk" else "use an led lamp instead of the screen")
     if any(k in t for k in kw.get("travel", [])):
         hints.append("повідом маршрут близьким" if lang == "uk" else "share your route with close ones")
+        hints.append("збережи офлайн-карти" if lang == "uk" else "save offline maps")
     if any(k in t for k in kw.get("children", [])):
         hints.append("запиши контакти для дітей" if lang == "uk" else "write key contacts for kids")
     if any(k in t for k in kw.get("old_phone", [])):
@@ -4718,6 +4752,16 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
         hints.append("заряджай від ноутбука через usb" if lang == "uk" else "charge via a laptop usb port")
     if any(k in t for k in kw.get("unstable", [])):
         hints.append("надсилай дуже короткі повідомлення" if lang == "uk" else "send very short messages")
+    if any(k in t for k in kw.get("docs", [])):
+        hints.append("збережи копії документів офлайн" if lang == "uk" else "save offline copies of documents")
+    if any(k in t for k in kw.get("water", [])):
+        hints.append("зроби запас води на 24 години" if lang == "uk" else "prepare water for 24 hours")
+    if any(k in t for k in kw.get("heat", [])):
+        hints.append("підготуй ковдру і теплий одяг" if lang == "uk" else "prepare blankets and warm clothes")
+    if any(k in t for k in kw.get("maps", [])):
+        hints.append("збережи офлайн-карти" if lang == "uk" else "save offline maps")
+    if any(k in t for k in kw.get("cash", [])):
+        hints.append("май трохи готівки" if lang == "uk" else "keep a bit of cash")
     if any(k in t for k in kw.get("long_outage", [])):
         hints.append("узгодь графік коротких перевірок" if lang == "uk" else "set a short check-in schedule")
     if any(k in t for k in kw.get("only_one", [])):
@@ -4930,12 +4974,16 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
     badge = _channel_badge_for_topic(title, lang)
+    reason = _channel_reason_line(title, lang)
     hint = "Лайфхаки та важливі деталі:" if lang == "uk" else "Lifehacks and key tips:"
-    lines = [badge, title, "", hint] if badge else [title, "", hint]
+    lines = [badge, title] if badge else [title]
+    if reason:
+        lines.append(reason)
+    lines.extend(["", hint])
     for idx, action in enumerate(actions, 1):
         lines.append(f"{idx}) {action}")
     lines.append("")
-    lines.append(CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"]))
+    lines.append(_channel_cta(lang))
     t = _topic_lower(topic)
     if _normalize_channel_topic(topic) == "pinned" or any(k in t for k in ("вхідна", "вход", "закреп", "entry point", "pinned")):
         lines.append(_channel_bot_line(lang))
@@ -4962,6 +5010,24 @@ def _channel_badge_for_topic(topic: str, lang: str) -> str:
     if "система активна" in t or "system active" in t:
         return "✅ Статус" if lang == "uk" else "✅ Status"
     return ""
+
+def _channel_reason_line(topic: str, lang: str) -> str:
+    t = (topic or "").strip().lower()
+    if not t:
+        return ""
+    if any(k in t for k in ("заряд", "батар", "power", "battery", "phone", "телефон")):
+        return "Навіщо: більше часу на звʼязок." if lang == "uk" else "Why: more time for connection."
+    if any(k in t for k in ("звʼязок", "message", "contact", "повідом")):
+        return "Навіщо: швидко підтвердити, що ти ОК." if lang == "uk" else "Why: quick check-in with close ones."
+    if any(k in t for k in ("офлайн", "документ", "вода", "тепл", "offline", "document", "water", "heat")):
+        return "Навіщо: автономність без мережі." if lang == "uk" else "Why: stay ready without the grid."
+    if any(k in t for k in ("міф", "myth", "fact", "факт")):
+        return "Навіщо: відсіяти зайве." if lang == "uk" else "Why: cut through noise."
+    return "Навіщо: простий план без паніки." if lang == "uk" else "Why: a simple calm plan."
+
+def _channel_cta(lang: str) -> str:
+    variants = CHANNEL_CTA_VARIANTS.get(lang, CHANNEL_CTA_VARIANTS["uk"])
+    return random.choice(variants) if variants else CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
 
 def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
     if not text or _channel_is_low_value(text):
@@ -5099,7 +5165,7 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
 
 def _channel_post_fallback(topic: str, lang: str) -> str:
     key = _normalize_channel_topic(topic)
-    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    cta = _channel_cta(lang)
     if key == "if_no_internet":
         if lang == "uk":
             return (
