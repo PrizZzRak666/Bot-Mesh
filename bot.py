@@ -1800,6 +1800,14 @@ CHANNEL_POSTS_USE_WEEKLY_PLAN = env_bool("CHANNEL_POSTS_USE_WEEKLY_PLAN", True)
 CHANNEL_POSTS_TONE = env("CHANNEL_POSTS_TONE", "auto").strip().lower()
 CHANNEL_HOOK_CHANCE = env_float("CHANNEL_HOOK_CHANCE", 0.35)
 CHANNEL_TITLE_VARIANT_CHANCE = env_float("CHANNEL_TITLE_VARIANT_CHANCE", 0.4)
+CHANNEL_POSTS_BUTTONS_ENABLED = env_bool("CHANNEL_POSTS_BUTTONS_ENABLED", True)
+CHANNEL_BIWEEKLY_TOPIC = env("CHANNEL_BIWEEKLY_TOPIC", "ten_minute_pack").strip()
+CHANNEL_BIWEEKLY_DAY = env_int("CHANNEL_BIWEEKLY_DAY", 0)  # 0=Mon
+CHANNEL_BIWEEKLY_INTERVAL_DAYS = env_int("CHANNEL_BIWEEKLY_INTERVAL_DAYS", 14)
+CHANNEL_WEEKLY_KIDS_TOPIC = env("CHANNEL_WEEKLY_KIDS_TOPIC", "kids_parents").strip()
+CHANNEL_WEEKLY_KIDS_DAY = env_int("CHANNEL_WEEKLY_KIDS_DAY", 2)  # 0=Mon
+CHANNEL_WEEKLY_TRUST_TOPIC = env("CHANNEL_WEEKLY_TRUST_TOPIC", "trust_status").strip()
+CHANNEL_WEEKLY_TRUST_DAY = env_int("CHANNEL_WEEKLY_TRUST_DAY", 4)  # 0=Mon
 CHANNEL_POSTS_TOPICS_RAW = env("CHANNEL_POSTS_TOPICS", "").strip()
 CHANNEL_POSTS_TOPICS_FILE = env("CHANNEL_POSTS_TOPICS_FILE", "channel_topics.txt").strip()
 CHANNEL_POSTS_IMAGE_ENABLED = env_bool(
@@ -3837,6 +3845,9 @@ CHANNEL_DEFAULT_TOPICS = [
     "if_family",
     "pinned",
     "prepare",
+    "trust_status",
+    "ten_minute_pack",
+    "kids_parents",
 ]
 
 CHANNEL_DEFAULT_TOPICS_BY_BLOCK = {
@@ -3844,11 +3855,11 @@ CHANNEL_DEFAULT_TOPICS_BY_BLOCK = {
     "2": ["if_no_internet", "if_no_mobile", "if_not_home", "if_family"],
     "3": ["forward_close"],
     "4": ["not_news"],
-    "5": ["pinned"],
+    "5": ["pinned", "trust_status"],
     "6": ["value_simple"],
     "7": ["prepare"],
-    "8": ["save_checklist"],
-    "9": ["if_family"],
+    "8": ["save_checklist", "ten_minute_pack"],
+    "9": ["if_family", "kids_parents"],
 }
 
 CHANNEL_TOPIC_ALIASES = {
@@ -3868,6 +3879,9 @@ CHANNEL_TOPIC_ALIASES = {
     "forward": "forward_close",
     "quiet": "quiet",
     "weekly_summary": "weekly_summary",
+    "trust_status": "trust_status",
+    "ten_minute_pack": "ten_minute_pack",
+    "kids_parents": "kids_parents",
     "not_news": "not_news",
     "pinned": "pinned",
     "save_checklist": "save_checklist",
@@ -4038,11 +4052,13 @@ CHANNEL_REQUIRED_ACTION_HINTS_BY_GROUP = {
 
 CHANNEL_POSTS_STATE_FILE = _resolve_path(env("CHANNEL_POSTS_STATE_FILE", "data/channel_posts_state.json"))
 _channel_posts_index = 0
+_channel_posts_ab = False
 _channel_posts_images_disabled_until = 0.0
 CHANNEL_POSTS_ACTIONS_FILE = _resolve_path(env("CHANNEL_POSTS_ACTIONS_FILE", "data/channel_posts_actions.json"))
 _channel_recent_actions: deque[str] = deque()
 CHANNEL_POSTS_TOPICS_HISTORY_FILE = _resolve_path(env("CHANNEL_POSTS_TOPICS_HISTORY_FILE", "data/channel_posts_topics.json"))
 _channel_recent_topics: deque[Dict[str, object]] = deque()
+CHANNEL_TOPIC_SIM_THRESHOLD = env_float("CHANNEL_TOPIC_SIM_THRESHOLD", 0.6)
 
 def _channel_post_lang() -> str:
     return CHANNEL_POSTS_LANG if CHANNEL_POSTS_LANG in ("uk", "en") else "uk"
@@ -4129,6 +4145,29 @@ def _weekly_plan_slot(now: datetime) -> str:
     slot = schedule.get(weekday, ("1", "2"))
     return slot[0] if morning else slot[1]
 
+def _topic_last_sent(topic: str) -> Optional[float]:
+    norm = _normalize_topic_name(topic)
+    if not norm:
+        return None
+    for item in reversed(_channel_recent_topics):
+        if _normalize_topic_name(str(item.get("topic") or "")) == norm:
+            try:
+                return float(item.get("ts") or 0)
+            except Exception:
+                return None
+    return None
+
+def _should_force_topic(topic: str, weekday: int, interval_days: int) -> bool:
+    if not topic:
+        return False
+    now = _channel_now()
+    if now.weekday() != weekday or now.hour >= 14:
+        return False
+    last_ts = _topic_last_sent(topic)
+    if last_ts is None:
+        return True
+    return (time.time() - last_ts) >= max(1, interval_days) * 86400
+
 def _peek_topic_from_list(topics: List[str]) -> str:
     if not topics:
         return "status"
@@ -4173,7 +4212,7 @@ def _normalize_channel_topic(raw: str) -> str:
     return CHANNEL_TOPIC_ALIASES.get(key, key)
 
 def _load_channel_posts_state() -> None:
-    global _channel_posts_index
+    global _channel_posts_index, _channel_posts_ab
     if not CHANNEL_POSTS_STATE_FILE.exists():
         return
     try:
@@ -4185,11 +4224,17 @@ def _load_channel_posts_state() -> None:
         idx = data.get("idx")
         if isinstance(idx, int) and idx >= 0:
             _channel_posts_index = idx
+        ab = data.get("ab")
+        if isinstance(ab, bool):
+            _channel_posts_ab = ab
 
 def _save_channel_posts_state() -> None:
     try:
         CHANNEL_POSTS_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CHANNEL_POSTS_STATE_FILE.write_text(json.dumps({"idx": _channel_posts_index}), encoding="utf-8")
+        CHANNEL_POSTS_STATE_FILE.write_text(
+            json.dumps({"idx": _channel_posts_index, "ab": _channel_posts_ab}),
+            encoding="utf-8",
+        )
     except Exception:
         logger.exception("Failed to save channel post state")
 
@@ -4207,13 +4252,20 @@ def _load_channel_topics_history() -> None:
                 continue
             topic = item.get("topic")
             ts = item.get("ts")
+            kw = item.get("kw")
             if not isinstance(topic, str) or not topic:
                 continue
             try:
                 ts_val = float(ts)
             except Exception:
                 continue
-            _channel_recent_topics.append({"topic": topic, "ts": ts_val})
+            kw_list: List[str] = []
+            if isinstance(kw, list):
+                kw_list = [str(k).lower() for k in kw if isinstance(k, str)]
+            entry = {"topic": topic, "ts": ts_val}
+            if kw_list:
+                entry["kw"] = kw_list
+            _channel_recent_topics.append(entry)
     _prune_topic_history()
 
 def _save_channel_topics_history() -> None:
@@ -4227,6 +4279,37 @@ def _save_channel_topics_history() -> None:
 
 def _normalize_topic_name(topic: str) -> str:
     return " ".join((topic or "").strip().lower().split())
+
+_TOPIC_STOPWORDS = {
+    "uk": {
+        "як", "що", "чому", "коли", "якщо", "про", "для", "цей", "ця", "ці", "це",
+        "та", "і", "й", "або", "на", "у", "в", "з", "до", "за", "без", "по", "чи",
+        "ти", "ви", "ми", "вони", "вона", "він", "це", "є",
+    },
+    "en": {
+        "how", "what", "why", "when", "if", "for", "the", "this", "that", "with", "and", "or",
+        "to", "of", "in", "on", "at", "by", "from", "without", "your", "you", "we", "they",
+    },
+}
+
+def _topic_keywords(text: str) -> Set[str]:
+    tokens = re.findall(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", text or "")
+    out: Set[str] = set()
+    for tok in tokens:
+        t = tok.lower()
+        if len(t) < 4:
+            continue
+        if t in _TOPIC_STOPWORDS["uk"] or t in _TOPIC_STOPWORDS["en"]:
+            continue
+        out.add(t)
+    return out
+
+def _topic_is_similar(a: Set[str], b: Set[str]) -> bool:
+    if not a or not b:
+        return False
+    overlap = len(a & b)
+    denom = max(1, min(len(a), len(b)))
+    return (overlap / denom) >= CHANNEL_TOPIC_SIM_THRESHOLD
 
 def _prune_topic_history() -> None:
     if CHANNEL_POSTS_TOPIC_HISTORY_MAX <= 0:
@@ -4242,6 +4325,7 @@ def _topic_recently_used(topic: str) -> bool:
     if not norm:
         return False
     cutoff = time.time() - CHANNEL_POSTS_TOPIC_REPEAT_HOURS * 3600
+    candidate_kw = _topic_keywords(topic)
     for item in reversed(_channel_recent_topics):
         try:
             ts = float(item.get("ts") or 0)
@@ -4251,14 +4335,27 @@ def _topic_recently_used(topic: str) -> bool:
             break
         if _normalize_topic_name(str(item.get("topic") or "")) == norm:
             return True
+        recent_kw = set(item.get("kw") or [])
+        if candidate_kw and recent_kw and _topic_is_similar(candidate_kw, recent_kw):
+            return True
     return False
+
+def _toggle_channel_ab() -> None:
+    global _channel_posts_ab
+    _channel_posts_ab = not _channel_posts_ab
+    _save_channel_posts_state()
 
 def _remember_channel_topic(topic: str) -> None:
     if not topic:
         return
-    _channel_recent_topics.append({"topic": topic, "ts": time.time()})
+    kw = sorted(_topic_keywords(topic))
+    entry = {"topic": topic, "ts": time.time()}
+    if kw:
+        entry["kw"] = kw
+    _channel_recent_topics.append(entry)
     _prune_topic_history()
     _save_channel_topics_history()
+    _toggle_channel_ab()
 
 def _load_channel_actions() -> None:
     if not CHANNEL_POSTS_ACTIONS_FILE.exists():
@@ -4287,6 +4384,12 @@ def _save_channel_actions() -> None:
         logger.exception("Failed to save channel actions")
 
 def _next_channel_topic() -> str:
+    if _should_force_topic(CHANNEL_BIWEEKLY_TOPIC, CHANNEL_BIWEEKLY_DAY, CHANNEL_BIWEEKLY_INTERVAL_DAYS):
+        return CHANNEL_BIWEEKLY_TOPIC
+    if _should_force_topic(CHANNEL_WEEKLY_KIDS_TOPIC, CHANNEL_WEEKLY_KIDS_DAY, 7):
+        return CHANNEL_WEEKLY_KIDS_TOPIC
+    if _should_force_topic(CHANNEL_WEEKLY_TRUST_TOPIC, CHANNEL_WEEKLY_TRUST_DAY, 7):
+        return CHANNEL_WEEKLY_TRUST_TOPIC
     if CHANNEL_POSTS_USE_WEEKLY_PLAN:
         slot = _weekly_plan_slot(_channel_now())
         if slot in ("quiet", "weekly_summary"):
@@ -4308,6 +4411,15 @@ def _channel_bot_line(lang: str) -> str:
         return f"{label} {link}"
     hint = "посилання у профілі каналу" if lang == "uk" else "link in the channel profile"
     return f"{label} {hint}"
+
+def _channel_post_keyboard(lang: str) -> Optional[InlineKeyboardMarkup]:
+    if not CHANNEL_POSTS_BUTTONS_ENABLED:
+        return None
+    link = _footer_bot_link()
+    if not link:
+        return None
+    label = "🟢 Запит / Підключення" if lang == "uk" else "🟢 Request / Connect"
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, url=link)]])
 
 def _channel_ai_instructions(lang: str) -> str:
     language = "Ukrainian" if lang == "uk" else "English"
@@ -4352,8 +4464,9 @@ def _disable_channel_post_images_temporarily(reason: str) -> None:
         reason,
     )
 
-def _channel_post_image_prompt(topic: str, text: str) -> str:
-    topic = clip(topic or "", 140)
+def _channel_post_image_prompt(topic: str, text: str, lang: str) -> str:
+    display = _channel_display_title(topic, lang)
+    topic = clip(display or topic or "", 140)
     summary = clip(_clean_html(text or ""), 600)
     base = (
         "Create a single, safe-for-work illustration for a Telegram channel post about emergency "
@@ -4365,12 +4478,12 @@ def _channel_post_image_prompt(topic: str, text: str) -> str:
         base = base + " " + style_line
     return f"{base}\n\nTOPIC: {topic}\nPOST: {summary}"
 
-async def _generate_channel_post_image(topic: str, text: str) -> Optional[bytes]:
+async def _generate_channel_post_image(topic: str, text: str, lang: str) -> Optional[bytes]:
     reason = _channel_post_image_skip_reason()
     if reason:
         logger.info("Channel post image skipped: %s", reason)
         return None
-    prompt = _channel_post_image_prompt(topic, text)
+    prompt = _channel_post_image_prompt(topic, text, lang)
     logger.debug(
         "Channel post image request: model=%s size=%s prompt_len=%s",
         CHANNEL_POSTS_IMAGE_MODEL,
@@ -4566,14 +4679,14 @@ def _channel_quiet_prompt(lang: str) -> str:
         return (
             "Пост у стилі «тихе присутність».\n"
             "Почни рядком: Нічого робити не потрібно. Просто збережи.\n"
-            "Додай 3–5 коротких ПРАКТИЧНИХ дій (наприклад: перевір заряд).\n"
+            "Додай 2–3 короткі ПРАКТИЧНІ дії (наприклад: перевір заряд).\n"
             "Без емоцій і без загальних фраз.\n\n"
             + _channel_prompt_requirements("тихе присутність", lang)
         )
     return (
         "A quiet-presence post.\n"
         "Start with: No action is needed. Just save this.\n"
-        "Add 3–5 short PRACTICAL actions (e.g., check battery).\n"
+        "Add 2–3 short PRACTICAL actions (e.g., check battery).\n"
         "No emotions and no vague phrases.\n\n"
         + _channel_prompt_requirements("quiet presence", lang)
     )
@@ -4860,6 +4973,8 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "підготуй ковдру і теплий одяг": "Підготуй ковдру і теплий одяг",
         "збережи офлайн-карти": "Збережи офлайн-карти",
         "май трохи готівки": "Май трохи готівки",
+        "домовся про кодове слово": "Домовся про кодове слово",
+        "визнач одну точку зустрічі": "Визнач одну точку зустрічі",
     }
     mapping_en = {
         "prepare a power bank and cable": "Prepare a power bank and cable",
@@ -4880,6 +4995,8 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "prepare blankets and warm clothes": "Prepare blankets and warm clothes",
         "save offline maps": "Save offline maps",
         "keep a bit of cash": "Keep a bit of cash",
+        "agree on a code word": "Agree on a code word",
+        "pick one meeting point": "Pick one meeting point",
     }
     mapping = mapping_uk if lang == "uk" else mapping_en
     return [mapping.get(h, h) for h in hints]
@@ -4927,8 +5044,22 @@ def _channel_required_action_hints(topic: str, lang: str) -> str:
 
 def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
     t = _topic_lower(topic)
+    key = _normalize_channel_topic(topic)
     hints: List[str] = []
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    if key == "kids_parents":
+        hints.extend([
+            "запиши контакти для дітей" if lang == "uk" else "write key contacts for kids",
+            "домовся про кодове слово" if lang == "uk" else "agree on a code word",
+            "визнач одну точку зустрічі" if lang == "uk" else "pick one meeting point",
+        ])
+    if key == "ten_minute_pack":
+        hints.extend([
+            "збережи копії документів офлайн" if lang == "uk" else "save offline copies of documents",
+            "зроби запас води на 24 години" if lang == "uk" else "prepare water for 24 hours",
+            "май трохи готівки" if lang == "uk" else "keep a bit of cash",
+            "підготуй ліхтарик на батарейках" if lang == "uk" else "keep a battery flashlight ready",
+        ])
     if any(k in t for k in kw.get("power_outage", [])):
         hints.append("підготуй павербанк і кабель" if lang == "uk" else "prepare a power bank and cable")
         hints.append("підготуй ліхтарик на батарейках" if lang == "uk" else "keep a battery flashlight ready")
@@ -5168,8 +5299,49 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
 
     return cleaned
 
+def _channel_display_title(topic: str, lang: str) -> str:
+    key = _normalize_channel_topic(topic)
+    if lang == "uk":
+        mapping = {
+            "if_no_internet": "Як діяти, якщо немає інтернету",
+            "if_no_mobile": "Як діяти, якщо немає мобільного звʼязку",
+            "if_not_home": "Як діяти, якщо ти не вдома",
+            "if_family": "Як діяти, якщо відповідаєш за сімʼю",
+            "prepare": "Підготовка заздалегідь",
+            "save_checklist": "Коротка інструкція на випадок збою звʼязку",
+            "value_simple": "Інструкції замість новин",
+            "forward_close": "Перешли близьким",
+            "quiet": "Тихе нагадування",
+            "not_news": "Це не новини",
+            "pinned": "Вхідна точка",
+            "weekly_summary": "Підсумок тижня",
+            "trust_status": "Довіра та статус каналу",
+            "ten_minute_pack": "Міні-набір на 10 хвилин",
+            "kids_parents": "Памʼятка для батьків",
+        }
+    else:
+        mapping = {
+            "if_no_internet": "What to do if there is no internet",
+            "if_no_mobile": "What to do if there is no mobile network",
+            "if_not_home": "What to do if you are not at home",
+            "if_family": "What to do if you are responsible for family",
+            "prepare": "Prepare in advance",
+            "save_checklist": "Quick checklist for a comms outage",
+            "value_simple": "Instructions, not news",
+            "forward_close": "Forward to close ones",
+            "quiet": "Quiet reminder",
+            "not_news": "This is not news",
+            "pinned": "Entry point",
+            "weekly_summary": "Weekly recap",
+            "trust_status": "Trust & channel status",
+            "ten_minute_pack": "10-minute kit",
+            "kids_parents": "Parents checklist",
+        }
+    return mapping.get(key) or (topic or "").strip()
+
 def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> str:
-    title = _channel_title_variant(topic, lang) or (topic or "").strip()
+    display_title = _channel_display_title(topic, lang)
+    title = _channel_title_variant(display_title, lang) or display_title
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
     badge = _channel_badge_for_topic(title, lang)
@@ -5239,12 +5411,14 @@ def _channel_action_limits(topic: str, lang: str) -> tuple[int, int]:
     key = _normalize_channel_topic(topic)
     t = _topic_lower(topic)
     if key in ("quiet", "weekly_summary") or "тих" in t or "quiet" in t:
-        return 3, 5
+        return 2, 3
     return 5, 7
 
 def _channel_title_variant(topic: str, lang: str) -> str:
     title = (topic or "").strip()
-    if not title or random.random() > CHANNEL_TITLE_VARIANT_CHANCE:
+    if not title or not _channel_posts_ab:
+        return title
+    if random.random() > CHANNEL_TITLE_VARIANT_CHANCE:
         return title
     if lang == "uk":
         if title.startswith("Як "):
@@ -5319,6 +5493,24 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
         return _channel_checklist_prompt(
             "Підсумок тижня: одна ключова дія",
             "Weekly recap: one key action",
+            lang,
+        )
+    if key == "trust_status":
+        return _channel_checklist_prompt(
+            "Довіра до каналу: 5 перевірок",
+            "Trust the channel: 5 checks",
+            lang,
+        )
+    if key == "ten_minute_pack":
+        return _channel_checklist_prompt(
+            "Міні-набір на 10 хвилин",
+            "10-minute kit",
+            lang,
+        )
+    if key == "kids_parents":
+        return _channel_checklist_prompt(
+            "Памʼятка для батьків: звʼязок з дітьми",
+            "Parents checklist: staying in touch with kids",
             lang,
         )
     if key == "if_no_internet":
@@ -5437,6 +5629,68 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
 def _channel_post_fallback(topic: str, lang: str) -> str:
     key = _normalize_channel_topic(topic)
     cta = _channel_cta(lang)
+    if key == "trust_status":
+        if lang == "uk":
+            return (
+                "✅ Довіра та статус каналу\n\n"
+                "1) Збережи цей канал як інструкцію\n"
+                "2) Перевіряй кілька джерел перед репостом\n"
+                "3) Не поширюй непідтверджені чутки\n"
+                "4) Домовся з близькими про один канал\n"
+                "5) Перевір короткі інструкції перед діями\n"
+                f"6) Повернись до цього поста при сумнівах\n\n{cta}"
+            )
+        return (
+            "✅ Trust & channel status\n\n"
+            "1) Save this channel as instructions\n"
+            "2) Check two sources before sharing\n"
+            "3) Do not forward unverified rumors\n"
+            "4) Agree on one channel with family\n"
+            "5) Follow short instructions before action\n"
+            f"6) Return to this post when unsure\n\n{cta}"
+        )
+    if key == "ten_minute_pack":
+        if lang == "uk":
+            return (
+                "🧰 Міні-набір на 10 хвилин\n\n"
+                "1) Збери документи і копії\n"
+                "2) Поклади воду на добу\n"
+                "3) Підготуй заряд і кабель\n"
+                "4) Додай ліхтарик на батарейках\n"
+                "5) Поклади трохи готівки\n"
+                "6) Збережи контакти офлайн\n"
+                f"7) Підготуй коротке повідомлення\n\n{cta}"
+            )
+        return (
+            "🧰 10-minute kit\n\n"
+            "1) Gather documents and copies\n"
+            "2) Pack water for a day\n"
+            "3) Add a charger and cable\n"
+            "4) Keep a battery flashlight\n"
+            "5) Carry a bit of cash\n"
+            "6) Save contacts offline\n"
+            f"7) Prepare one short message\n\n{cta}"
+        )
+    if key == "kids_parents":
+        if lang == "uk":
+            return (
+                "👨‍👩‍👧 Памʼятка для батьків\n\n"
+                "1) Запиши ключові контакти на папір\n"
+                "2) Домовся про кодове слово\n"
+                "3) Покажи дитині коротке повідомлення\n"
+                "4) Визнач одну точку зустрічі\n"
+                "5) Збережи адреси офлайн\n"
+                f"6) Перевір заряд у дітей\n\n{cta}"
+            )
+        return (
+            "👨‍👩‍👧 Parents checklist\n\n"
+            "1) Write key contacts on paper\n"
+            "2) Agree on a code word\n"
+            "3) Show kids a short message\n"
+            "4) Pick one meeting point\n"
+            "5) Save addresses offline\n"
+            f"6) Check kids' phone battery\n\n{cta}"
+        )
     if key == "if_no_internet":
         if lang == "uk":
             return (
@@ -5607,21 +5861,13 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
                 "Нічого робити не потрібно. Просто збережи.\n\n"
                 "1) Перевір заряд\n"
                 "2) Увімкни енергозбереження\n"
-                "3) Вимкни зайві підключення\n"
-                "4) Збережи контакти офлайн\n"
-                "5) Підготуй коротке повідомлення\n"
-                "6) Домовся про один спосіб звʼязку\n"
-                "7) Тримай цей пост під рукою"
+                f"3) Домовся про один спосіб звʼязку\n\n{cta}"
             )
         return (
             "No action is needed. Just save this.\n\n"
             "1) Check your battery\n"
             "2) Enable power saving\n"
-            "3) Disable extra connections\n"
-            "4) Save contacts offline\n"
-            "5) Prepare one short message\n"
-            "6) Agree on one way to connect\n"
-            "7) Keep this post handy"
+            f"3) Agree on one way to connect\n\n{cta}"
         )
     if key == "not_news":
         if lang == "uk":
@@ -5766,7 +6012,69 @@ async def _ai_channel_post(prompt: str, lang: str) -> str:
         logger.exception("Channel post AI failed")
         return ""
 
+def _weekly_summary_topics(limit: int = 3) -> List[str]:
+    cutoff = time.time() - 7 * 86400
+    seen: Set[str] = set()
+    items: List[str] = []
+    for item in reversed(_channel_recent_topics):
+        try:
+            ts = float(item.get("ts") or 0)
+        except Exception:
+            continue
+        if ts < cutoff:
+            break
+        topic = str(item.get("topic") or "").strip()
+        norm = _normalize_topic_name(topic)
+        if not norm or norm in seen:
+            continue
+        items.append(topic)
+        seen.add(norm)
+        if len(items) >= limit:
+            break
+    return list(reversed(items))
+
+def _weekly_summary_action(lang: str) -> str:
+    if _channel_recent_actions:
+        return _channel_recent_actions[-1]
+    templates = _channel_required_action_templates(lang)
+    fallback = templates.get("power", []) or templates.get("backup_plan", [])
+    return fallback[0] if fallback else ("Увімкни енергозбереження" if lang == "uk" else "Enable power saving")
+
+def _channel_weekly_summary_text(lang: str) -> str:
+    badge = _channel_badge_for_topic("weekly recap", lang)
+    hook = _channel_hook_line(lang)
+    title = "Підсумок тижня" if lang == "uk" else "Weekly recap"
+    topics = _weekly_summary_topics()
+    lines: List[str] = []
+    if badge:
+        lines.append(badge)
+    lines.append(title)
+    if hook:
+        lines.append(hook)
+    reason = "3 ключові тези:" if lang == "uk" else "3 key points:"
+    lines.extend(["", reason])
+    if topics:
+        for t in topics:
+            lines.append(f"• {clip(t, 120)}")
+    else:
+        lines.extend([
+            "• Заряд і економія батареї",
+            "• Офлайн-контакти та план звʼязку",
+            "• Резервні способи координації",
+        ] if lang == "uk" else [
+            "• Battery and power saving",
+            "• Offline contacts and comms plan",
+            "• Backup coordination options",
+        ])
+    key_action = _weekly_summary_action(lang)
+    lines.extend(["", ("Одна ключова дія:" if lang == "uk" else "One key action:")])
+    lines.append(f"{key_action}")
+    lines.extend(["", _channel_cta(lang)])
+    return "\n".join([l for l in lines if l]).strip()
+
 async def _build_channel_post(topic: str, lang: str) -> str:
+    if _normalize_channel_topic(topic) == "weekly_summary":
+        return _channel_weekly_summary_text(lang)
     prompt = _channel_topic_prompt(topic, lang)
     text = ""
     if ai_enabled():
@@ -5786,13 +6094,15 @@ async def _build_channel_post(topic: str, lang: str) -> str:
     return fallback
 
 async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, text: str, lang: str) -> bool:
-    image_bytes = await _generate_channel_post_image(topic, text)
+    image_bytes = await _generate_channel_post_image(topic, text, lang)
+    reply_markup = _channel_post_keyboard(lang)
     if image_bytes:
         caption = _caption_with_footer(clip(text, 3000), NEWS_CHANNEL_ID, max_len=1024)
         await context.bot.send_photo(
             chat_id=NEWS_CHANNEL_ID,
             photo=InputFile(io.BytesIO(image_bytes), filename="channel_post.png"),
             caption=caption,
+            reply_markup=reply_markup,
         )
         logger.info("Channel post delivered with image: topic=%s lang=%s", topic, lang)
         actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
@@ -5803,6 +6113,7 @@ async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, tex
         chat_id=NEWS_CHANNEL_ID,
         text=_append_footer(clip(text, 3800), NEWS_CHANNEL_ID),
         disable_web_page_preview=True,
+        reply_markup=reply_markup,
     )
     logger.info("Channel post delivered: topic=%s lang=%s", topic, lang)
     actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
