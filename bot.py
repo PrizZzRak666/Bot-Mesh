@@ -5359,6 +5359,8 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     title = _channel_title_variant(display_title, lang) or display_title
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
+    key = _normalize_channel_topic(topic)
+    quiet_mode = key == "quiet"
     badge = _channel_badge_for_topic(title, lang)
     time_badge = _channel_time_badge(_channel_now(), lang)
     badge_line = " ".join([b for b in (time_badge, badge) if b])
@@ -5366,11 +5368,19 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     reason = _channel_reason_line(title, lang)
     hint = _channel_hint_line(lang)
     lines = [badge_line, title] if badge_line else [title]
-    if hook:
+    if hook and not quiet_mode:
         lines.append(hook)
-    if reason:
+    if reason and not quiet_mode:
         lines.append(reason)
-    lines.extend(["", hint])
+    if quiet_mode:
+        quiet_line = (
+            "Нічого робити не потрібно. Просто збережи."
+            if lang == "uk"
+            else "No action is needed. Just save this."
+        )
+        lines.extend(["", quiet_line, ""])
+    else:
+        lines.extend(["", hint])
     for idx, action in enumerate(actions, 1):
         lines.append(f"{idx}) {action}")
     lines.append("")
@@ -5484,7 +5494,7 @@ def _channel_reason_line(topic: str, lang: str) -> str:
     return "Навіщо: простий план без паніки." if lang == "uk" else "Why: a simple calm plan."
 
 def _channel_hook_line(lang: str) -> str:
-    if random.random() < CHANNEL_HOOK_CHANCE:
+    if random.random() > CHANNEL_HOOK_CHANCE:
         return ""
     variants = CHANNEL_HOOK_LINES.get(lang, CHANNEL_HOOK_LINES["uk"])
     return random.choice(variants) if variants else ""
@@ -6069,10 +6079,13 @@ def _weekly_summary_action(lang: str) -> str:
 
 def _channel_weekly_summary_text(lang: str) -> str:
     badge = _channel_badge_for_topic("weekly recap", lang)
+    time_badge = _channel_time_badge(_channel_now(), lang)
     hook = _channel_hook_line(lang)
     title = "Підсумок тижня" if lang == "uk" else "Weekly recap"
     topics = _weekly_summary_topics()
     lines: List[str] = []
+    if time_badge:
+        lines.append(time_badge)
     if badge:
         lines.append(badge)
     lines.append(title)
