@@ -1741,6 +1741,10 @@ CHANNEL_POSTS_IMAGE_MODEL = env("CHANNEL_POSTS_IMAGE_MODEL", "gpt-image-1")
 CHANNEL_POSTS_IMAGE_SIZE = env("CHANNEL_POSTS_IMAGE_SIZE", "1024x1024")
 CHANNEL_POSTS_IMAGE_TIMEOUT_SEC = env_int("CHANNEL_POSTS_IMAGE_TIMEOUT_SEC", 20)
 CHANNEL_POSTS_IMAGE_TEMP_DISABLE_SEC = env_int("CHANNEL_POSTS_IMAGE_TEMP_DISABLE_SEC", 900)
+CHANNEL_POSTS_ACTION_HISTORY_MAX = env_int("CHANNEL_POSTS_ACTION_HISTORY_MAX", 120)
+CHANNEL_POSTS_ACTION_REPEAT_MAX = env_int("CHANNEL_POSTS_ACTION_REPEAT_MAX", 0)
+CHANNEL_POSTS_ACTION_MIN_WORDS = env_int("CHANNEL_POSTS_ACTION_MIN_WORDS", 2)
+CHANNEL_POSTS_ACTION_MAX_WORDS = env_int("CHANNEL_POSTS_ACTION_MAX_WORDS", 10)
 
 NEWS_IMAGE_ENABLED = env_bool("NEWS_IMAGE_ENABLED", False)
 NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
@@ -3540,9 +3544,75 @@ CHANNEL_CTA_TEXT = {
     "en": "🔁 Save this and forward to close ones.",
 }
 
+CHANNEL_LOW_VALUE_PHRASES = [
+    "заспокойся",
+    "слідкуй за інструкціями",
+    "дій за інструкціями",
+    "follow the channel instructions",
+    "follow instructions",
+    "stay calm",
+    "keep calm",
+    "be ready",
+    "будь готов",
+    "ми на звʼязку",
+    "we are here",
+]
+
+CHANNEL_ACTION_KEYWORDS = {
+    "uk": {
+        "power": ["заряд", "енергозбереж", "павербанк"],
+        "offline_contacts": ["контакт", "офлайн"],
+        "short_message": ["повідом", "смс", "коротк", "одне повідом"],
+        "backup_plan": ["план", "резерв", "спосіб зв", "місце зустріч", "точка зустріч", "зустріч"],
+        "connections_off": ["wi-fi", "wifi", "bluetooth", "фонов", "оновлен", "підключенн"],
+        "travel": ["дороз", "маршрут", "адрес", "локац", "поїзд"],
+        "children": ["діт", "дитин"],
+        "power_outage": ["світл", "електр", "блекаут"],
+        "old_phone": ["стар", "повільн", "памʼят", "пам'ят"],
+        "phone_dead": ["розряд", "кабель", "заряд", "павербанк"],
+        "unstable": ["нестаб", "перерив", "зника"],
+        "long_outage": ["6 год", "6год", "доб", "доба", "сут"],
+        "only_one": ["лише у одного", "одна людина", "один телефон", "координатор"],
+        "not_tech": ["не розбира", "не в темі"],
+    },
+    "en": {
+        "power": ["battery", "charge", "power saving", "power bank"],
+        "offline_contacts": ["contact", "offline"],
+        "short_message": ["message", "text", "short"],
+        "backup_plan": ["plan", "backup", "meeting", "meet", "check-in", "way to connect"],
+        "connections_off": ["wifi", "wi-fi", "bluetooth", "background"],
+        "travel": ["travel", "road", "route", "address", "location"],
+        "children": ["child", "kids"],
+        "power_outage": ["power outage", "blackout", "electricity"],
+        "old_phone": ["old phone", "slow", "storage"],
+        "phone_dead": ["dead", "charger", "cable", "power bank"],
+        "unstable": ["unstable", "drops", "weak signal"],
+        "long_outage": ["6 hours", "24 hours", "one day", "a day"],
+        "only_one": ["only one", "one person", "coordinator"],
+        "not_tech": ["not technical", "not tech", "not into"],
+    },
+}
+
+CHANNEL_REQUIRED_ACTION_HINTS = {
+    "uk": [
+        "заряд/енергозбереження",
+        "офлайн-контакти",
+        "коротке повідомлення близьким",
+        "резервний спосіб звʼязку або план",
+    ],
+    "en": [
+        "battery/power saving",
+        "offline contacts",
+        "one short message to close ones",
+        "backup way to connect or meeting plan",
+    ],
+}
+
 CHANNEL_POSTS_STATE_FILE = Path("data/channel_posts_state.json")
 _channel_posts_index = 0
 _channel_posts_images_disabled_until = 0.0
+CHANNEL_POSTS_ACTIONS_FILE = Path("data/channel_posts_actions.json")
+_channel_recent_actions: deque[str] = deque()
 
 def _channel_post_lang() -> str:
     return CHANNEL_POSTS_LANG if CHANNEL_POSTS_LANG in ("uk", "en") else "uk"
@@ -3603,6 +3673,32 @@ def _save_channel_posts_state() -> None:
     except Exception:
         logger.exception("Failed to save channel post state")
 
+def _load_channel_actions() -> None:
+    if not CHANNEL_POSTS_ACTIONS_FILE.exists():
+        return
+    try:
+        data = json.loads(CHANNEL_POSTS_ACTIONS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load channel actions")
+        return
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, str):
+                continue
+            if item:
+                _channel_recent_actions.append(item)
+    while len(_channel_recent_actions) > CHANNEL_POSTS_ACTION_HISTORY_MAX:
+        _channel_recent_actions.popleft()
+
+def _save_channel_actions() -> None:
+    try:
+        CHANNEL_POSTS_ACTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CHANNEL_POSTS_ACTIONS_FILE.write_text(
+            json.dumps(list(_channel_recent_actions)), encoding="utf-8"
+        )
+    except Exception:
+        logger.exception("Failed to save channel actions")
+
 def _next_channel_topic() -> str:
     topics = _channel_topics()
     if not topics:
@@ -3614,6 +3710,7 @@ def _next_channel_topic() -> str:
     return topics[idx]
 
 _load_channel_posts_state()
+_load_channel_actions()
 
 def _channel_bot_line(lang: str) -> str:
     label = "Бот:" if lang == "uk" else "Bot:"
@@ -3634,6 +3731,9 @@ def _channel_ai_instructions(lang: str) -> str:
         "4) No news, no analysis, no dates.\n"
         "5) Keep it short, calm, factual.\n"
         "6) Use simple words. Do not mention AI.\n"
+        "7) Every line must be a concrete, practical action or clear conclusion. No vague phrases.\n"
+        "8) Avoid repeats and filler like 'follow instructions' or 'stay calm'.\n"
+        f"9) Each action line should be {CHANNEL_POSTS_ACTION_MIN_WORDS}-{CHANNEL_POSTS_ACTION_MAX_WORDS} words.\n"
         f"Language: {language}.\n"
     )
 
@@ -3732,8 +3832,10 @@ def _channel_checklist_prompt(title_uk: str, title_en: str, lang: str) -> str:
             "ЗАГОЛОВОК\n\n"
             "1) ...\n"
             "2) ...\n"
-            "... (5–7 коротких пунктів)\n"
-            f"\n{cta}"
+            "... (5–7 коротких ПРАКТИЧНИХ пунктів)\n"
+            "Кожен пункт = конкретна дія, починається з дієслова.\n"
+            "Без загальних фраз типу «слідкуй за інструкціями».\n"
+            f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
         )
     return (
         "Write a short checklist post.\n"
@@ -3742,8 +3844,10 @@ def _channel_checklist_prompt(title_uk: str, title_en: str, lang: str) -> str:
         "TITLE\n\n"
         "1) ...\n"
         "2) ...\n"
-        "... (5–7 short points)\n"
-        f"\n{cta}"
+        "... (5–7 PRACTICAL points)\n"
+        "Each point must be a concrete action starting with a verb.\n"
+        "Avoid vague lines like 'follow instructions'.\n"
+        f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
 
 def _topic_lower(text: str) -> str:
@@ -3780,16 +3884,18 @@ def _channel_scenario_prompt(title: str, lang: str) -> str:
             f"Заголовок: {title}\n"
             "Формат:\n"
             "ЗАГОЛОВОК\n\n"
-            "A → B → C → D → E (5–7 коротких кроків)\n"
-            f"\n{cta}"
+            "A → B → C → D → E (5–7 коротких практичних кроків)\n"
+            "Кожен крок = конкретна дія.\n"
+            f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
         )
     return (
         "Write a scenario post.\n"
         f"Title: {title}\n"
         "Format:\n"
         "TITLE\n\n"
-        "A → B → C → D → E (5–7 short steps)\n"
-        f"\n{cta}"
+        "A → B → C → D → E (5–7 short practical steps)\n"
+        "Each step must be a concrete action.\n"
+        f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
 
 def _channel_explain_prompt(title: str, lang: str) -> str:
@@ -3800,18 +3906,20 @@ def _channel_explain_prompt(title: str, lang: str) -> str:
             f"Заголовок: {title}\n"
             "Формат:\n"
             "ЗАГОЛОВОК\n"
-            "• 3–4 короткі пункти простими словами\n"
+            "• 5–7 коротких пунктів простими словами\n"
+            "Кожен пункт має конкретну практичну дію.\n"
             "Без технічних деталей, без дат, без новин.\n"
-            f"{cta}"
+            f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
         )
     return (
         "Write a short explanatory post.\n"
         f"Title: {title}\n"
         "Format:\n"
         "TITLE\n"
-        "• 3–4 short bullet points in simple words\n"
+        "• 5–7 short bullet points in simple words\n"
+        "Each point must be a concrete practical action.\n"
         "No technical details, no dates, no news.\n"
-        f"{cta}"
+        f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
 
 def _channel_forward_prompt(title: str, lang: str) -> str:
@@ -3819,15 +3927,17 @@ def _channel_forward_prompt(title: str, lang: str) -> str:
     if lang == "uk":
         return (
             f"Заголовок: {title}\n"
-            "Далі 3–4 короткі рядки простими словами.\n"
+            "Далі 5–7 коротких рядків простими словами.\n"
+            "Кожен рядок = конкретна дія.\n"
             "Без складних термінів.\n"
-            f"{cta}"
+            f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
         )
     return (
         f"Title: {title}\n"
-        "Then 3–4 short lines in simple words.\n"
+        "Then 5–7 short lines in simple words.\n"
+        "Each line must be a concrete action.\n"
         "No complex terms.\n"
-        f"{cta}"
+        f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
 
 def _channel_quiet_prompt(lang: str) -> str:
@@ -3835,15 +3945,169 @@ def _channel_quiet_prompt(lang: str) -> str:
         return (
             "Пост у стилі «тихе присутність».\n"
             "Почни рядком: Нічого робити не потрібно. Просто збережи.\n"
-            "Додай ще 1–2 короткі рядки.\n"
-            "Без емоцій."
+            "Додай 5–7 коротких ПРАКТИЧНИХ дій (наприклад: перевір заряд).\n"
+            "Без емоцій і без загальних фраз.\n\n"
+            + _channel_prompt_requirements("тихе присутність", lang)
         )
     return (
         "A quiet-presence post.\n"
         "Start with: No action is needed. Just save this.\n"
-        "Add 1–2 short lines.\n"
-        "No emotions."
+        "Add 5–7 short PRACTICAL actions (e.g., check battery).\n"
+        "No emotions and no vague phrases.\n\n"
+        + _channel_prompt_requirements("quiet presence", lang)
     )
+
+def _channel_is_low_value(text: str) -> bool:
+    if not text:
+        return True
+    t = text.strip().lower()
+    return any(phrase in t for phrase in CHANNEL_LOW_VALUE_PHRASES)
+
+_ACTION_ITEM_RE = re.compile(r"^\s*(?:\d+[\).]|[•*\-])\s+")
+
+def _extract_action_lines(text: str) -> List[str]:
+    if not text:
+        return []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    actions: List[str] = []
+    for line in lines:
+        if _ACTION_ITEM_RE.match(line):
+            actions.append(_ACTION_ITEM_RE.sub("", line).strip())
+    if actions:
+        return actions
+    for line in lines:
+        if "→" in line or "->" in line:
+            sep = "→" if "→" in line else "->"
+            parts = [p.strip() for p in line.split(sep) if p.strip()]
+            if len(parts) >= 2:
+                return parts
+    return []
+
+def _count_action_items(text: str) -> int:
+    return len(_extract_action_lines(text))
+
+def _action_word_count(text: str) -> int:
+    return len(re.findall(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", text or ""))
+
+def _normalize_action_line(text: str) -> str:
+    text = _ACTION_ITEM_RE.sub("", (text or ""))
+    text = re.sub(r"[^\w\s]+", " ", text.lower())
+    return " ".join(text.split())
+
+def _channel_action_has_keywords(action: str, keywords: List[str]) -> bool:
+    if not action:
+        return False
+    a = action.lower()
+    return any(k in a for k in keywords if k)
+
+def _channel_required_groups(topic: str) -> List[str]:
+    return ["power", "offline_contacts", "short_message", "backup_plan"]
+
+def _channel_required_action_hints(lang: str) -> str:
+    hints = CHANNEL_REQUIRED_ACTION_HINTS.get(lang, CHANNEL_REQUIRED_ACTION_HINTS["uk"])
+    return ", ".join(hints)
+
+def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
+    t = _topic_lower(topic)
+    hints: List[str] = []
+    kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    if any(k in t for k in kw.get("power_outage", [])):
+        hints.append("підготуй павербанк і кабель" if lang == "uk" else "prepare a power bank and cable")
+    if any(k in t for k in kw.get("travel", [])):
+        hints.append("повідом маршрут близьким" if lang == "uk" else "share your route with close ones")
+    if any(k in t for k in kw.get("children", [])):
+        hints.append("запиши контакти для дітей" if lang == "uk" else "write key contacts for kids")
+    if any(k in t for k in kw.get("old_phone", [])):
+        hints.append("очисти памʼять і вимкни фонові оновлення" if lang == "uk" else "clear storage and disable background updates")
+    if any(k in t for k in kw.get("phone_dead", [])):
+        hints.append("підключи павербанк або знайди заряд" if lang == "uk" else "use a power bank or find charging")
+    if any(k in t for k in kw.get("unstable", [])):
+        hints.append("надсилай дуже короткі повідомлення" if lang == "uk" else "send very short messages")
+    if any(k in t for k in kw.get("long_outage", [])):
+        hints.append("узгодь графік коротких перевірок" if lang == "uk" else "set a short check-in schedule")
+    if any(k in t for k in kw.get("only_one", [])):
+        hints.append("признач координатора звʼязку" if lang == "uk" else "assign one coordinator")
+    if any(k in t for k in kw.get("not_tech", [])):
+        hints.append("попроси допомогу однією фразою" if lang == "uk" else "ask for help in one sentence")
+    return hints
+
+def _channel_prompt_requirements(topic: str, lang: str) -> str:
+    required = _channel_required_action_hints(lang)
+    extra = _channel_topic_extra_hints(topic, lang)
+    recent = "; ".join(list(_channel_recent_actions)[-6:])
+    word_min = max(1, CHANNEL_POSTS_ACTION_MIN_WORDS)
+    word_max = max(word_min, CHANNEL_POSTS_ACTION_MAX_WORDS)
+    if lang == "uk":
+        lines = [
+            f"Обовʼязково включи дії про: {required}.",
+            f"Кожен рядок = дія, починай дієсловом, {word_min}-{word_max} слів.",
+        ]
+        if recent:
+            lines.append("Не повторюй такі дії: " + recent + ".")
+        if extra:
+            lines.append("Додай хоча б одну дію про: " + "; ".join(extra) + ".")
+    else:
+        lines = [
+            f"Mandatory actions: {required}.",
+            f"Each line must start with a verb and be {word_min}-{word_max} words.",
+        ]
+        if recent:
+            lines.append("Avoid repeating these actions: " + recent + ".")
+        if extra:
+            lines.append("Include at least one action about: " + "; ".join(extra) + ".")
+    return "\n".join(lines)
+
+def _channel_actions_cover_required(actions: List[str], topic: str, lang: str) -> bool:
+    groups = _channel_required_groups(topic)
+    kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    for group in groups:
+        keywords = kw.get(group, [])
+        if keywords and not any(_channel_action_has_keywords(action, keywords) for action in actions):
+            return False
+    return True
+
+def _channel_action_overlap_count(actions: List[str]) -> int:
+    if not actions:
+        return 0
+    recent = set(_channel_recent_actions)
+    overlaps = [a for a in actions if a in recent]
+    return len(overlaps)
+
+def _remember_channel_actions(actions: List[str]) -> None:
+    if not actions:
+        return
+    for action in actions:
+        if not action:
+            continue
+        _channel_recent_actions.append(action)
+        while len(_channel_recent_actions) > CHANNEL_POSTS_ACTION_HISTORY_MAX:
+            _channel_recent_actions.popleft()
+    _save_channel_actions()
+
+def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
+    if not text:
+        return False
+    if _channel_is_low_value(text):
+        return False
+    actions = _extract_action_lines(text)
+    if not (5 <= len(actions) <= 7):
+        return False
+    if not _channel_actions_cover_required(actions, topic, lang):
+        return False
+    seen: Set[str] = set()
+    for action in actions:
+        if _channel_is_low_value(action):
+            return False
+        words = _action_word_count(action)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            return False
+        norm = _normalize_action_line(action)
+        if not norm or norm in seen:
+            return False
+        seen.add(norm)
+    if _channel_action_overlap_count(list(seen)) > CHANNEL_POSTS_ACTION_REPEAT_MAX:
+        return False
+    return True
 
 def _channel_titled_post(title: str, lines: List[str], cta: Optional[str] = None) -> str:
     parts = [title, ""]
@@ -3897,16 +4161,18 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
                 "❌ Інтернет\n"
                 "❌ Мобільний звʼязок\n"
                 "✅ Telegram + інструкція\n"
-                "Потім 1–2 короткі речення, простими словами.\n"
-                f"Закінчи рядком: {CHANNEL_CTA_TEXT['uk']}"
+                "Потім 5–7 коротких дій у форматі списку.\n"
+                "Кожен пункт = конкретна дія.\n"
+                f"Закінчи рядком: {CHANNEL_CTA_TEXT['uk']}\n\n{_channel_prompt_requirements('цінність', lang)}"
             )
         return (
             "Write a short post using this formula:\n"
             "❌ Internet\n"
             "❌ Mobile network\n"
             "✅ Telegram + instructions\n"
-            "Then add 1–2 short sentences in simple words.\n"
-            f"End with the line: {CHANNEL_CTA_TEXT['en']}"
+            "Then add 5–7 short actions as a list.\n"
+            "Each point must be a concrete action.\n"
+            f"End with the line: {CHANNEL_CTA_TEXT['en']}\n\n{_channel_prompt_requirements('value', lang)}"
         )
     if key == "forward_close":
         if lang == "uk":
@@ -3942,14 +4208,14 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
             return (
                 "Зроби «вхідний» пост з розділами:\n"
                 "Що це / Коли потрібно / Як підключитися.\n"
-                "Кожен розділ — 2–3 короткі пункти.\n"
-                f"Останній рядок: {bot_line}"
+                "Кожен розділ — 2 короткі ПРАКТИЧНІ дії.\n"
+                f"Останній рядок: {bot_line}\n\n{_channel_prompt_requirements('вхідна точка', lang)}"
             )
         return (
             "Create an entry-point post with sections:\n"
             "What this is / When to use / How to connect.\n"
-            "Each section: 2–3 short bullet points.\n"
-            f"Last line: {bot_line}"
+            "Each section: 2 short PRACTICAL actions.\n"
+            f"Last line: {bot_line}\n\n{_channel_prompt_requirements('entry point', lang)}"
         )
     theme = topic.strip() or ("Коротка інструкція" if lang == "uk" else "Short checklist")
     mode = _channel_auto_mode(theme)
@@ -3970,73 +4236,79 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
         if lang == "uk":
             return (
                 "🧭 Якщо немає інтернету\n\n"
-                "1) Перевір заряд телефону\n"
-                "2) Відкрий канал і подивись статус\n"
-                "3) Напиши коротке повідомлення близьким\n"
-                "4) Дій за інструкціями з каналу\n"
-                f"5) Економ заряд і вимкни зайве\n\n{cta}"
+                "1) Увімкни режим енергозбереження\n"
+                "2) Вимкни Wi-Fi, Bluetooth і фонові оновлення\n"
+                "3) Надішли близьким одне коротке повідомлення\n"
+                "4) Домовся про час і спосіб звʼязку\n"
+                f"5) Збережи важливі номери офлайн\n\n{cta}"
             )
         return (
             "🧭 If there is no internet\n\n"
-            "1) Check your phone battery\n"
-            "2) Open the channel and check status\n"
-            "3) Send a short message to close ones\n"
-            "4) Follow the channel instructions\n"
-            f"5) Save battery and close extra apps\n\n{cta}"
+            "1) Turn on power saving mode\n"
+            "2) Disable Wi-Fi, Bluetooth, and background updates\n"
+            "3) Send one short message to close ones\n"
+            "4) Agree on time and way to connect\n"
+            f"5) Save important numbers offline\n\n{cta}"
         )
     if key == "if_no_mobile":
         if lang == "uk":
             return (
                 "🧭 Якщо немає мобільного звʼязку\n\n"
-                "1) Перевір, чи є сигнал\n"
-                "2) Повідом близьких коротко\n"
-                "3) Слідкуй за статусом системи\n"
-                "4) Дій за інструкціями каналу\n"
-                f"5) Бережи заряд\n\n{cta}"
+                "1) Перейди ближче до вікна або на відкрите місце\n"
+                "2) Увімкни режим енергозбереження\n"
+                "3) Надішли коротке повідомлення, коли зʼявиться сигнал\n"
+                "4) Домовся про резервний спосіб звʼязку\n"
+                "5) Збережи контакти офлайн\n"
+                f"6) Тримай телефон зарядженим\n\n{cta}"
             )
         return (
             "🧭 If there is no mobile network\n\n"
-            "1) Check if there is any signal\n"
-            "2) Send a short message to close ones\n"
-            "3) Monitor the system status\n"
-            "4) Follow the channel instructions\n"
-            f"5) Save battery\n\n{cta}"
+            "1) Move closer to a window or open area\n"
+            "2) Turn on power saving mode\n"
+            "3) Send a short message once signal appears\n"
+            "4) Agree on a backup way to connect\n"
+            "5) Save contacts offline\n"
+            f"6) Keep your phone charged\n\n{cta}"
         )
     if key == "if_not_home":
         if lang == "uk":
             return (
                 "🧭 Якщо ти не вдома\n\n"
-                "1) Знайди безпечне місце\n"
-                "2) Повідом близьких, де ти\n"
-                "3) Тримай звʼязок короткими повідомленнями\n"
-                "4) Дій за інструкціями каналу\n"
-                f"5) Плануй маршрут додому\n\n{cta}"
+                "1) Знайди безпечне місце і залишайся там\n"
+                "2) Напиши близьким, де ти і що з тобою все гаразд\n"
+                "3) Увімкни енергозбереження\n"
+                "4) Домовся про місце зустрічі\n"
+                "5) Збережи контакти офлайн\n"
+                f"6) Плануй короткий маршрут додому\n\n{cta}"
             )
         return (
             "🧭 If you are not at home\n\n"
-            "1) Find a safe place\n"
-            "2) Tell close ones where you are\n"
-            "3) Keep contact with short messages\n"
-            "4) Follow the channel instructions\n"
-            f"5) Plan your way home\n\n{cta}"
+            "1) Find a safe place and stay there\n"
+            "2) Tell close ones where you are and that you are safe\n"
+            "3) Turn on power saving mode\n"
+            "4) Agree on a meeting point\n"
+            "5) Save contacts offline\n"
+            f"6) Plan a short route home\n\n{cta}"
         )
     if key == "if_family":
         if lang == "uk":
             return (
                 "🧭 Якщо відповідаєш за сімʼю\n\n"
-                "1) Перевір, що всі в безпеці\n"
-                "2) Домовся про прості правила звʼязку\n"
-                "3) Стисле повідомлення краще за мовчання\n"
-                "4) Дій за інструкціями каналу\n"
-                f"5) Тримай план зустрічі\n\n{cta}"
+                "1) Перевір, де всі знаходяться\n"
+                "2) Узгодь одне коротке правило звʼязку\n"
+                "3) Признач спільну точку зустрічі\n"
+                "4) Розподіли задачі (заряд, вода, документи)\n"
+                "5) Збережи контакти офлайн\n"
+                f"6) Надсилай короткі підтвердження\n\n{cta}"
             )
         return (
             "🧭 If you are responsible for family\n\n"
-            "1) Make sure everyone is safe\n"
-            "2) Agree on simple contact rules\n"
-            "3) A short message is better than silence\n"
-            "4) Follow the channel instructions\n"
-            f"5) Keep a meeting plan\n\n{cta}"
+            "1) Check where everyone is\n"
+            "2) Agree on one short contact rule\n"
+            "3) Set a shared meeting point\n"
+            "4) Split tasks (charge, water, documents)\n"
+            "5) Save contacts offline\n"
+            f"6) Send brief confirmations\n\n{cta}"
         )
     if key == "prepare":
         if lang == "uk":
@@ -4044,35 +4316,39 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
                 "🧭 Підготовка заздалегідь (5 кроків)\n\n"
                 "1) Збережи цей канал і бота\n"
                 "2) Домовся з близькими про простий план\n"
-                "3) Тримай заряд або павербанк\n"
-                "4) Збережи важливі контакти\n"
-                f"5) Перевір, що бот відкривається\n\n{cta}"
+                "3) Заряди телефон і павербанк\n"
+                "4) Збережи важливі контакти офлайн\n"
+                "5) Підготуй одне коротке повідомлення\n"
+                f"6) Перевір, що бот відкривається\n\n{cta}"
             )
         return (
             "🧭 Prepare in advance (5 steps)\n\n"
             "1) Save this channel and the bot\n"
             "2) Agree on a simple plan with close ones\n"
-            "3) Keep a charge or power bank\n"
-            "4) Save important contacts\n"
-            f"5) Make sure the bot opens\n\n{cta}"
+            "3) Charge your phone and power bank\n"
+            "4) Save important contacts offline\n"
+            "5) Prepare one short message\n"
+            f"6) Make sure the bot opens\n\n{cta}"
         )
     if key == "save_checklist":
         if lang == "uk":
             return (
                 "🧭 Коротка інструкція на випадок збою звʼязку\n\n"
-                "1) Заспокойся і оцінюй ситуацію\n"
-                "2) Перевір заряд і економ режим\n"
-                "3) Слідкуй за статусом системи\n"
+                "1) Увімкни режим енергозбереження\n"
+                "2) Вимкни непотрібні підключення (Wi-Fi, Bluetooth)\n"
+                "3) Підготуй один короткий шаблон повідомлення\n"
                 "4) Повідом близьких одним реченням\n"
-                f"5) Дій за інструкціями каналу\n\n{cta}"
+                "5) Домовся про резервний спосіб звʼязку\n"
+                f"6) Збережи контакти офлайн\n\n{cta}"
             )
         return (
             "🧭 Quick checklist for a comms outage\n\n"
-            "1) Stay calm and assess the situation\n"
-            "2) Check battery and save power\n"
-            "3) Monitor system status\n"
+            "1) Turn on power saving mode\n"
+            "2) Disable unused connections (Wi-Fi, Bluetooth)\n"
+            "3) Prepare one short message template\n"
             "4) Send one short message to close ones\n"
-            f"5) Follow the channel instructions\n\n{cta}"
+            "5) Agree on a backup way to connect\n"
+            f"6) Save contacts offline\n\n{cta}"
         )
     if key == "value_simple":
         if lang == "uk":
@@ -4080,81 +4356,109 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
                 "❌ Інтернет\n"
                 "❌ Мобільний звʼязок\n"
                 "✅ Telegram + інструкція\n\n"
-                "Працює, коли інші канали мовчать.\n"
-                f"Короткі дії замість довгих пояснень.\n\n{cta}"
+                "1) Збережи цей пост\n"
+                "2) Домовся про короткий план\n"
+                "3) Заряди телефон і павербанк\n"
+                "4) Збережи контакти офлайн\n"
+                "5) Підготуй одне коротке повідомлення\n\n"
+                f"{cta}"
             )
         return (
             "❌ Internet\n"
             "❌ Mobile network\n"
             "✅ Telegram + instructions\n\n"
-            "Works when other channels are silent.\n"
-            f"Short actions instead of long explanations.\n\n{cta}"
+            "1) Save this post\n"
+            "2) Agree on a short plan\n"
+            "3) Charge your phone and power bank\n"
+            "4) Save contacts offline\n"
+            "5) Prepare one short message\n\n"
+            f"{cta}"
         )
     if key == "forward_close":
         if lang == "uk":
             return (
                 "Перешли близьким\n\n"
-                "Це канал коротких інструкцій.\n"
-                "Тут немає новин і паніки.\n"
-                f"Просто дії, коли вони потрібні.\n\n{cta}"
+                "1) Поясни, що тут короткі інструкції\n"
+                "2) Попроси зберегти цей пост\n"
+                "3) Перевір разом заряд телефону\n"
+                "4) Домовся про один спосіб звʼязку\n"
+                "5) Збережи контакти офлайн\n"
+                f"6) Узгодь час для короткої перевірки\n\n{cta}"
             )
         return (
             "Forward to close ones\n\n"
-            "This is a channel with short instructions.\n"
-            "No news and no panic.\n"
-            f"Just actions when they are needed.\n\n{cta}"
+            "1) Explain this is a short-instruction channel\n"
+            "2) Ask them to save this post\n"
+            "3) Check their phone battery together\n"
+            "4) Agree on one way to connect\n"
+            "5) Save contacts offline\n"
+            f"6) Set a time for a short check-in\n\n{cta}"
         )
     if key == "quiet":
         if lang == "uk":
             return (
                 "Нічого робити не потрібно. Просто збережи.\n\n"
-                "Система працює, ми на звʼязку.\n"
-                "Дії — лише за потреби."
+                "1) Перевір заряд\n"
+                "2) Увімкни енергозбереження\n"
+                "3) Вимкни зайві підключення\n"
+                "4) Збережи контакти офлайн\n"
+                "5) Підготуй коротке повідомлення\n"
+                "6) Домовся про один спосіб звʼязку\n"
+                "7) Тримай цей пост під рукою"
             )
         return (
             "No action is needed. Just save this.\n\n"
-            "The system is working, we are here.\n"
-            "Actions only when needed."
+            "1) Check your battery\n"
+            "2) Enable power saving\n"
+            "3) Disable extra connections\n"
+            "4) Save contacts offline\n"
+            "5) Prepare one short message\n"
+            "6) Agree on one way to connect\n"
+            "7) Keep this post handy"
         )
     if key == "not_news":
         if lang == "uk":
             return (
                 "Це не новини\n\n"
-                "Тут лише короткі інструкції.\n"
-                f"Коли потрібно діяти — дієш.\n\n{cta}"
+                "1) Це короткі інструкції, не новини\n"
+                "2) Збережи цей пост\n"
+                "3) Домовся про короткий план\n"
+                "4) Підготуй одне коротке повідомлення\n"
+                "5) Перевір заряд телефону\n"
+                "6) Збережи контакти офлайн\n"
+                f"7) Використай його, коли потрібно діяти\n\n{cta}"
             )
         return (
             "This is not news\n\n"
-            "Only short instructions here.\n"
-            f"When action is needed — you act.\n\n{cta}"
+            "1) Only short instructions here\n"
+            "2) Save this post\n"
+            "3) Agree on a short plan\n"
+            "4) Prepare one short message\n"
+            "5) Check your phone battery\n"
+            "6) Save contacts offline\n"
+            f"7) Use it when action is needed\n\n{cta}"
         )
     if key == "pinned":
         bot_line = _channel_bot_line(lang)
         if lang == "uk":
             return (
                 "📌 Вхідна точка\n\n"
-                "Що це:\n"
-                "• канал коротких інструкцій і статусу системи\n"
-                "• офіційна точка опори\n\n"
-                "Коли потрібно:\n"
-                "• немає інтернету або мобільного звʼязку\n"
-                "• надзвичайні ситуації\n\n"
-                "Як підключитися:\n"
-                "• подай запит у боті\n"
-                "• доступ після перевірки\n\n"
+                "1) Збережи канал як інструкцію\n"
+                "2) Використовуй для коротких дій\n"
+                "3) Дій, якщо немає інтернету\n"
+                "4) Дій, якщо немає мобільного звʼязку\n"
+                "5) Подай запит у боті\n"
+                "6) Дочекайся підтвердження\n\n"
                 f"{bot_line}"
             )
         return (
             "📌 Entry point\n\n"
-            "What this is:\n"
-            "• a channel with short instructions and system status\n"
-            "• an official point of reference\n\n"
-            "When to use:\n"
-            "• no internet or mobile network\n"
-            "• emergencies\n\n"
-            "How to connect:\n"
-            "• submit a request in the bot\n"
-            "• access is granted after verification\n\n"
+            "1) Save the channel as your instruction\n"
+            "2) Use it for short actions\n"
+            "3) Use it if there is no internet\n"
+            "4) Use it if there is no mobile network\n"
+            "5) Submit a request in the bot\n"
+            "6) Wait for approval\n\n"
             f"{bot_line}"
         )
     theme = topic.strip() or ("Коротка інструкція" if lang == "uk" else "Short checklist")
@@ -4163,14 +4467,20 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
         if lang == "uk":
             lines = [
                 "Це коротка інструкція для швидких дій.",
-                "Збережи і тримай під рукою.",
-                "Пояснює без складних слів.",
+                "Попроси зберегти та перевірити заряд.",
+                "Домовся про один спосіб звʼязку.",
+                "Узгодь час короткої перевірки.",
+                "Підготуй одне коротке повідомлення.",
+                "Збережи контакти офлайн.",
             ]
         else:
             lines = [
                 "This is a short guide for quick action.",
-                "Save it and keep it handy.",
-                "Explained in simple words.",
+                "Ask them to save it and check battery.",
+                "Agree on one way to connect.",
+                "Set a time for a short check-in.",
+                "Prepare one short message.",
+                "Save contacts offline.",
             ]
         return _channel_titled_post(theme, lines, cta)
     if mode == "quiet":
@@ -4179,16 +4489,41 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
         if lang == "uk":
             lines = [
                 "Пояснюємо просто і коротко.",
-                "Без паніки та без зайвих деталей.",
-                "Головне — мати план і зберегти інструкції.",
+                "Збережи цей пост як інструкцію.",
+                "Домовся з близькими про короткий план.",
+                "Підготуй одне коротке повідомлення.",
+                "Перевір заряд телефону.",
+                "Збережи контакти офлайн.",
             ]
         else:
             lines = [
                 "Explained simply and briefly.",
-                "No panic and no extra details.",
-                "The main thing is to have a plan and save the instructions.",
+                "Save this post as your instruction.",
+                "Agree on a short plan with close ones.",
+                "Prepare one short message.",
+                "Check your phone battery.",
+                "Save contacts offline.",
             ]
         return _channel_titled_post(theme, lines, cta)
+    if mode == "scenario":
+        if lang == "uk":
+            steps = [
+                "Увімкни енергозбереження",
+                "Вимкни зайві підключення",
+                "Надішли одне коротке повідомлення",
+                "Домовся про час/місце звʼязку",
+                "Збережи контакти офлайн",
+            ]
+        else:
+            steps = [
+                "Enable power saving",
+                "Disable extra connections",
+                "Send one short message",
+                "Agree on time/place to connect",
+                "Save contacts offline",
+            ]
+        arrow = " → ".join(steps)
+        return _channel_titled_post(f"🧭 {theme}", [arrow], cta)
     return _channel_post_fallback("save_checklist", lang).replace("Коротка інструкція на випадок збою звʼязку", theme).replace(
         "Quick checklist for a comms outage", theme
     )
@@ -4226,8 +4561,35 @@ async def _build_channel_post(topic: str, lang: str) -> str:
     else:
         logger.info("Channel post AI unavailable: %s", _ai_status_reason())
     if text:
-        return text.strip()
+        text = text.strip()
+        if not _channel_validate_ai_post(text, topic, lang):
+            logger.info("Channel post AI rejected; fallback used: topic=%s", topic)
+            return _channel_post_fallback(topic, lang)
+        return text
     return _channel_post_fallback(topic, lang)
+
+async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, text: str, lang: str) -> bool:
+    image_bytes = await _generate_channel_post_image(topic, text)
+    if image_bytes:
+        caption = _caption_with_footer(clip(text, 3000), NEWS_CHANNEL_ID, max_len=1024)
+        await context.bot.send_photo(
+            chat_id=NEWS_CHANNEL_ID,
+            photo=InputFile(io.BytesIO(image_bytes), filename="channel_post.png"),
+            caption=caption,
+        )
+        logger.info("Channel post delivered with image: topic=%s lang=%s", topic, lang)
+        actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
+        _remember_channel_actions(actions)
+        return True
+    await context.bot.send_message(
+        chat_id=NEWS_CHANNEL_ID,
+        text=_append_footer(clip(text, 3800), NEWS_CHANNEL_ID),
+        disable_web_page_preview=True,
+    )
+    logger.info("Channel post delivered: topic=%s lang=%s", topic, lang)
+    actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
+    _remember_channel_actions(actions)
+    return False
 
 async def channel_posts_job(context: ContextTypes.DEFAULT_TYPE):
     if not CHANNEL_POSTS_ENABLED:
@@ -4240,22 +4602,7 @@ async def channel_posts_job(context: ContextTypes.DEFAULT_TYPE):
     text = await _build_channel_post(topic, lang)
     if not text:
         return
-    image_bytes = await _generate_channel_post_image(topic, text)
-    if image_bytes:
-        caption = _caption_with_footer(clip(text, 3000), NEWS_CHANNEL_ID, max_len=1024)
-        await context.bot.send_photo(
-            chat_id=NEWS_CHANNEL_ID,
-            photo=InputFile(io.BytesIO(image_bytes), filename="channel_post.png"),
-            caption=caption,
-        )
-        logger.info("Channel post delivered with image: topic=%s lang=%s", topic, lang)
-        return
-    await context.bot.send_message(
-        chat_id=NEWS_CHANNEL_ID,
-        text=_append_footer(clip(text, 3800), NEWS_CHANNEL_ID),
-        disable_web_page_preview=True,
-    )
-    logger.info("Channel post delivered: topic=%s lang=%s", topic, lang)
+    await _send_channel_post(context, topic, text, lang)
 
 # =========================
 # Conversation states
@@ -4572,6 +4919,64 @@ async def summary_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_chat.id,
             update.message.reply_text,
             t(uid, "❌ Помилка під час запуску.", "❌ Failed to run summary."),
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def channel_post_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_CHANNEL_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "NEWS_CHANNEL_ID не задан.", "NEWS_CHANNEL_ID is not set."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    topic_arg = " ".join(context.args or []).strip()
+    topic = topic_arg if topic_arg else _next_channel_topic()
+    lang = _channel_post_lang()
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Генерую пост...", "⏳ Generating post..."),
+    )
+    try:
+        text = await _build_channel_post(topic, lang)
+        if not text:
+            await send_with_cleanup(
+                context.bot,
+                update.effective_chat.id,
+                update.message.reply_text,
+                t(uid, "❌ Не вдалося згенерувати пост.", "❌ Failed to generate post."),
+                reply_markup=menu_only_kb(uid),
+            )
+            return
+        await _send_channel_post(context, topic, text, lang)
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "✅ Пост відправлено в канал.", "✅ Post sent to channel."),
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("Manual channel post failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час відправки.", "❌ Failed to send post."),
             reply_markup=menu_only_kb(uid),
         )
 
@@ -5735,6 +6140,7 @@ def main():
     app.add_handler(CommandHandler("news_image_test", news_image_test_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
+    app.add_handler(CommandHandler("channel_post_now", channel_post_now_cmd))
     app.add_handler(CommandHandler("news_stats", news_stats_cmd))
     app.add_handler(CommandHandler("news_keywords_suggest", news_keywords_suggest_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
