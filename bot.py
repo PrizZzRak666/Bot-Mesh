@@ -1770,7 +1770,7 @@ NEWS_IMAGE_TIMEOUT_SEC = env_int("NEWS_IMAGE_TIMEOUT_SEC", 20)
 NEWS_IMAGE_TEMP_DISABLE_SEC = env_int("NEWS_IMAGE_TEMP_DISABLE_SEC", 900)
 NEWS_IMAGE_STYLES = env(
     "NEWS_IMAGE_STYLES",
-    "editorial-ink,soft-gradient,paper-cut,isometric,flat-vector,grainy-duotone,monoline,watercolor",
+    "editorial-ink,cinematic-glow,comic-pop,poster-pop,soft-gradient,grainy-duotone,monoline",
 )
 NEWS_SUMMARY_IMAGE_STYLES = env("NEWS_SUMMARY_IMAGE_STYLES", "")
 _news_images_disabled_until = 0.0
@@ -2452,6 +2452,8 @@ IMAGE_STYLE_PRESETS = {
     "watercolor": "watercolor wash, soft edges",
     "comic-pop": "comic pop art, bold outlines, punchy shapes",
     "sticker-collage": "sticker collage, cutout feel, playful layering",
+    "cinematic-glow": "cinematic lighting, moody glow, depth and contrast",
+    "poster-pop": "bold poster design, high contrast, striking silhouette",
 }
 
 _last_news_image_style = ""
@@ -2520,8 +2522,10 @@ def _news_image_prompt(title: str, summary: str) -> str:
     summary = (summary or "").strip()
     base = (
         "Create a single, safe-for-work illustration for a news post about Ukraine. "
-        "If the news is light/positive, make it a playful meme-style image without text. "
-        "If the news is serious/tragic, make it a sober editorial illustration. "
+        "Make it visually bold and shareable with dynamic composition, strong contrast, "
+        "and clear visual metaphor. "
+        "If the news is light/positive, make it playful and meme-leaning without text. "
+        "If the news is serious/tragic, make it cinematic and respectful, not graphic. "
         "No graphic violence, no gore, no text overlays, no logos."
     )
     style_line = _image_style_line("news")
@@ -2598,8 +2602,9 @@ def _summary_image_prompt(headlines: List[str], ai_text: str) -> str:
     bullets = "\n".join([f"- {h}" for h in lines[:6]])
     base = (
         "Create a single cover illustration for a Ukraine news digest. "
-        "If the overall tone is positive/light, make it a playful meme-style image without text. "
-        "If the tone is grim/serious, make it a sober editorial illustration. "
+        "Make it visually bold and cinematic with a clear central metaphor and strong contrast. "
+        "If the overall tone is positive/light, make it playful and meme-leaning without text. "
+        "If the tone is grim/serious, make it cinematic and respectful, not graphic. "
         "No graphic violence, no gore, no text overlays, no logos."
     )
     style_line = _image_style_line("summary")
