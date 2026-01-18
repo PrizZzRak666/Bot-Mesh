@@ -1752,6 +1752,17 @@ CHANNEL_POSTS_ACTION_MAX_WORDS = env_int("CHANNEL_POSTS_ACTION_MAX_WORDS", 10)
 CHANNEL_POSTS_TOPIC_REPEAT_HOURS = env_int("CHANNEL_POSTS_TOPIC_REPEAT_HOURS", 48)
 CHANNEL_POSTS_TOPIC_HISTORY_MAX = env_int("CHANNEL_POSTS_TOPIC_HISTORY_MAX", 300)
 
+MEME_POSTS_ENABLED = env_bool("MEME_POSTS_ENABLED", False)
+MEME_POSTS_INTERVAL_SEC = env_int("MEME_POSTS_INTERVAL_SEC", 7200)
+MEME_IMAGE_MODEL = env("MEME_IMAGE_MODEL", "gpt-image-1")
+MEME_IMAGE_SIZE = env("MEME_IMAGE_SIZE", "1024x1024")
+MEME_IMAGE_TIMEOUT_SEC = env_int("MEME_IMAGE_TIMEOUT_SEC", 25)
+MEME_IMAGE_TEMP_DISABLE_SEC = env_int("MEME_IMAGE_TEMP_DISABLE_SEC", 900)
+MEME_IMAGE_STYLES = env(
+    "MEME_IMAGE_STYLES",
+    "comic-pop,sticker-collage,flat-vector,soft-gradient,grainy-duotone,paper-cut",
+)
+
 NEWS_IMAGE_ENABLED = env_bool("NEWS_IMAGE_ENABLED", False)
 NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
 NEWS_IMAGE_SIZE = env("NEWS_IMAGE_SIZE", "1024x1024")
@@ -1763,6 +1774,7 @@ NEWS_IMAGE_STYLES = env(
 )
 NEWS_SUMMARY_IMAGE_STYLES = env("NEWS_SUMMARY_IMAGE_STYLES", "")
 _news_images_disabled_until = 0.0
+_meme_images_disabled_until = 0.0
 
 def _news_image_skip_reason() -> str:
     if not NEWS_IMAGE_ENABLED:
@@ -1782,6 +1794,22 @@ def _disable_news_images_temporarily(reason: str) -> None:
         return
     _news_images_disabled_until = max(_news_images_disabled_until, time.time() + NEWS_IMAGE_TEMP_DISABLE_SEC)
     logger.warning("News images temporarily disabled for %ss: %s", NEWS_IMAGE_TEMP_DISABLE_SEC, reason)
+
+def _meme_image_skip_reason() -> str:
+    if not MEME_POSTS_ENABLED:
+        return "MEME_POSTS_ENABLED=false"
+    if time.time() < _meme_images_disabled_until:
+        return "temporarily disabled"
+    if not ai_enabled():
+        return "AI unavailable"
+    return ""
+
+def _disable_meme_images_temporarily(reason: str) -> None:
+    global _meme_images_disabled_until
+    if MEME_IMAGE_TEMP_DISABLE_SEC <= 0:
+        return
+    _meme_images_disabled_until = max(_meme_images_disabled_until, time.time() + MEME_IMAGE_TEMP_DISABLE_SEC)
+    logger.warning("Meme images temporarily disabled for %ss: %s", MEME_IMAGE_TEMP_DISABLE_SEC, reason)
 
 def _is_permission_denied(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) == 403:
@@ -2422,11 +2450,14 @@ IMAGE_STYLE_PRESETS = {
     "grainy-duotone": "duotone with subtle grain, calm palette",
     "monoline": "monoline illustration, minimal linework",
     "watercolor": "watercolor wash, soft edges",
+    "comic-pop": "comic pop art, bold outlines, punchy shapes",
+    "sticker-collage": "sticker collage, cutout feel, playful layering",
 }
 
 _last_news_image_style = ""
 _last_summary_image_style = ""
 _last_channel_image_style = ""
+_last_meme_image_style = ""
 
 def _normalize_style_key(value: str) -> str:
     return (value or "").strip().lower()
@@ -2448,6 +2479,8 @@ def _style_pool_for(kind: str) -> List[str]:
         return _parse_style_pool(NEWS_SUMMARY_IMAGE_STYLES, base_pool)
     if kind == "channel":
         return _parse_style_pool(CHANNEL_POSTS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+    if kind == "meme":
+        return _parse_style_pool(MEME_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
     return _parse_style_pool(NEWS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
 
 def _pick_style(pool: List[str], last: str) -> str:
@@ -2463,6 +2496,7 @@ def _pick_style(pool: List[str], last: str) -> str:
 
 def _image_style_line(kind: str) -> str:
     global _last_news_image_style, _last_summary_image_style, _last_channel_image_style
+    global _last_meme_image_style
     pool = _style_pool_for(kind)
     if not pool:
         return ""
@@ -2472,6 +2506,9 @@ def _image_style_line(kind: str) -> str:
     elif kind == "channel":
         choice = _pick_style(pool, _last_channel_image_style)
         _last_channel_image_style = choice
+    elif kind == "meme":
+        choice = _pick_style(pool, _last_meme_image_style)
+        _last_meme_image_style = choice
     else:
         choice = _pick_style(pool, _last_news_image_style)
         _last_news_image_style = choice
@@ -2619,6 +2656,75 @@ async def _generate_summary_image(items: List[Dict[str, object]], ai_text: str) 
         if _ai_should_backoff(exc):
             _ai_disable_temporarily("rate limit or quota")
         logger.exception("Summary image generation failed")
+        return None
+
+def _meme_image_prompt(headlines: List[str]) -> str:
+    lines = [clip(h or "", 180) for h in headlines if h]
+    bullets = "\n".join([f"- {h}" for h in lines[:6]])
+    base = (
+        "Create a single, safe-for-work meme-style illustration inspired by current Ukraine news headlines. "
+        "Make it clever, visually bold, and easy to share. "
+        "Humor must be respectful and never mock victims or tragedy. "
+        "No text overlays, no logos, no real people."
+    )
+    style_line = _image_style_line("meme")
+    if style_line:
+        base = base + " " + style_line
+    return f"{base}\n\nHEADLINES:\n{bullets}"
+
+async def _generate_meme_image(items: List[Dict[str, object]]) -> Optional[bytes]:
+    reason = _meme_image_skip_reason()
+    if reason:
+        logger.info("Meme image skipped: %s", reason)
+        return None
+    headlines = [str(it.get("title") or "") for it in items[:8]]
+    if not headlines:
+        logger.info("Meme image skipped: no headlines")
+        return None
+    prompt = _meme_image_prompt(headlines)
+    logger.debug(
+        "Meme image request: model=%s size=%s prompt_len=%s",
+        MEME_IMAGE_MODEL,
+        MEME_IMAGE_SIZE,
+        len(prompt),
+    )
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _ai_client.images.generate,
+                model=MEME_IMAGE_MODEL,
+                prompt=prompt,
+                size=MEME_IMAGE_SIZE,
+            ),
+            timeout=MEME_IMAGE_TIMEOUT_SEC,
+        )
+        data = getattr(resp, "data", None) or []
+        if not data:
+            logger.warning("Meme image generation returned empty data")
+            return None
+        item = data[0]
+        b64 = getattr(item, "b64_json", None)
+        if b64:
+            return base64.b64decode(b64)
+        url = getattr(item, "url", None)
+        if url:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(url)
+                if r.status_code < 400:
+                    return r.content
+                logger.warning("Meme image download failed: %s", r.status_code)
+        return None
+    except asyncio.TimeoutError:
+        _ai_register_timeout("meme_image")
+        logger.warning("Meme image generation timed out")
+        return None
+    except Exception as exc:
+        if _is_permission_denied(exc):
+            _disable_meme_images_temporarily("permission denied")
+            return None
+        if _ai_should_backoff(exc):
+            _ai_disable_temporarily("rate limit or quota")
+        logger.exception("Meme image generation failed")
         return None
 
 def _clean_html(text: str) -> str:
@@ -4992,6 +5098,35 @@ async def channel_posts_job(context: ContextTypes.DEFAULT_TYPE):
         return
     await _send_channel_post(context, topic, text, lang)
 
+async def meme_job(context: ContextTypes.DEFAULT_TYPE):
+    if not MEME_POSTS_ENABLED:
+        return
+    if not NEWS_CHANNEL_ID:
+        logger.info("Meme posts skipped: NEWS_CHANNEL_ID empty")
+        return
+    if not RSS_FEEDS:
+        logger.info("Meme posts skipped: RSS_FEEDS empty")
+        return
+    if not ai_enabled():
+        logger.info("Meme posts skipped: %s", _ai_status_reason())
+        return
+    items = await _collect_summary_items()
+    if not items:
+        logger.info("Meme posts skipped: no recent items")
+        return
+    image_bytes = await _generate_meme_image(items)
+    if not image_bytes:
+        return
+    try:
+        await context.bot.send_photo(
+            chat_id=NEWS_CHANNEL_ID,
+            photo=InputFile(io.BytesIO(image_bytes), filename="meme.png"),
+        )
+        logger.info("Meme post delivered")
+    except Exception:
+        logger.exception("Meme post failed")
+        raise
+
 # =========================
 # Conversation states
 # =========================
@@ -6508,6 +6643,8 @@ async def post_init(application):
         application.job_queue.run_repeating(alerts_job, interval=UA_ALARM_POLL_SEC, first=5)
     if CHANNEL_POSTS_ENABLED and CHANNEL_POSTS_INTERVAL_SEC > 0:
         application.job_queue.run_repeating(channel_posts_job, interval=CHANNEL_POSTS_INTERVAL_SEC, first=30)
+    if MEME_POSTS_ENABLED and MEME_POSTS_INTERVAL_SEC > 0:
+        application.job_queue.run_repeating(meme_job, interval=MEME_POSTS_INTERVAL_SEC, first=60)
 
 # =========================
 # main
