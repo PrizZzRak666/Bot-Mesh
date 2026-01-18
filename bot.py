@@ -26,6 +26,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFi
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 from telegram.error import Forbidden
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -1790,6 +1791,12 @@ FOOTER_BOT_LINK = env("FOOTER_BOT_LINK", "")
 FOOTER_CHANNEL_LINK = env("FOOTER_CHANNEL_LINK", "")
 FOOTER_SITE_LINK = env("FOOTER_SITE_LINK", "https://www.ukrainianaviation.com")
 BOT_PUBLIC_LINK = FOOTER_BOT_LINK
+
+TELEGRAM_CONNECT_TIMEOUT_SEC = env_float("TELEGRAM_CONNECT_TIMEOUT_SEC", 10)
+TELEGRAM_READ_TIMEOUT_SEC = env_float("TELEGRAM_READ_TIMEOUT_SEC", 20)
+TELEGRAM_WRITE_TIMEOUT_SEC = env_float("TELEGRAM_WRITE_TIMEOUT_SEC", 20)
+TELEGRAM_POOL_TIMEOUT_SEC = env_float("TELEGRAM_POOL_TIMEOUT_SEC", 5)
+TELEGRAM_MEDIA_WRITE_TIMEOUT_SEC = env_float("TELEGRAM_MEDIA_WRITE_TIMEOUT_SEC", 30)
 
 CHANNEL_POSTS_ENABLED = env_bool("CHANNEL_POSTS_ENABLED", False)
 CHANNEL_POSTS_INTERVAL_SEC = env_int("CHANNEL_POSTS_INTERVAL_SEC", 3600)
@@ -7892,9 +7899,17 @@ async def post_init(application):
 # =========================
 def main():
     _acquire_instance_lock()
+    request = HTTPXRequest(
+        connect_timeout=TELEGRAM_CONNECT_TIMEOUT_SEC,
+        read_timeout=TELEGRAM_READ_TIMEOUT_SEC,
+        write_timeout=TELEGRAM_WRITE_TIMEOUT_SEC,
+        pool_timeout=TELEGRAM_POOL_TIMEOUT_SEC,
+        media_write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT_SEC,
+    )
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+        .request(request)
         .post_init(post_init)
         .build()
     )
