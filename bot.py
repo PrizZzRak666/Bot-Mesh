@@ -1745,6 +1745,8 @@ CHANNEL_POSTS_ACTION_HISTORY_MAX = env_int("CHANNEL_POSTS_ACTION_HISTORY_MAX", 1
 CHANNEL_POSTS_ACTION_REPEAT_MAX = env_int("CHANNEL_POSTS_ACTION_REPEAT_MAX", 0)
 CHANNEL_POSTS_ACTION_MIN_WORDS = env_int("CHANNEL_POSTS_ACTION_MIN_WORDS", 2)
 CHANNEL_POSTS_ACTION_MAX_WORDS = env_int("CHANNEL_POSTS_ACTION_MAX_WORDS", 10)
+CHANNEL_POSTS_TOPIC_REPEAT_HOURS = env_int("CHANNEL_POSTS_TOPIC_REPEAT_HOURS", 48)
+CHANNEL_POSTS_TOPIC_HISTORY_MAX = env_int("CHANNEL_POSTS_TOPIC_HISTORY_MAX", 300)
 
 NEWS_IMAGE_ENABLED = env_bool("NEWS_IMAGE_ENABLED", False)
 NEWS_IMAGE_MODEL = env("NEWS_IMAGE_MODEL", "gpt-image-1")
@@ -3613,6 +3615,8 @@ _channel_posts_index = 0
 _channel_posts_images_disabled_until = 0.0
 CHANNEL_POSTS_ACTIONS_FILE = Path("data/channel_posts_actions.json")
 _channel_recent_actions: deque[str] = deque()
+CHANNEL_POSTS_TOPICS_HISTORY_FILE = Path("data/channel_posts_topics.json")
+_channel_recent_topics: deque[Dict[str, object]] = deque()
 
 def _channel_post_lang() -> str:
     return CHANNEL_POSTS_LANG if CHANNEL_POSTS_LANG in ("uk", "en") else "uk"
@@ -3673,6 +3677,73 @@ def _save_channel_posts_state() -> None:
     except Exception:
         logger.exception("Failed to save channel post state")
 
+def _load_channel_topics_history() -> None:
+    if not CHANNEL_POSTS_TOPICS_HISTORY_FILE.exists():
+        return
+    try:
+        data = json.loads(CHANNEL_POSTS_TOPICS_HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load channel topics history")
+        return
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            topic = item.get("topic")
+            ts = item.get("ts")
+            if not isinstance(topic, str) or not topic:
+                continue
+            try:
+                ts_val = float(ts)
+            except Exception:
+                continue
+            _channel_recent_topics.append({"topic": topic, "ts": ts_val})
+    _prune_topic_history()
+
+def _save_channel_topics_history() -> None:
+    try:
+        CHANNEL_POSTS_TOPICS_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CHANNEL_POSTS_TOPICS_HISTORY_FILE.write_text(
+            json.dumps(list(_channel_recent_topics)), encoding="utf-8"
+        )
+    except Exception:
+        logger.exception("Failed to save channel topics history")
+
+def _normalize_topic_name(topic: str) -> str:
+    return " ".join((topic or "").strip().lower().split())
+
+def _prune_topic_history() -> None:
+    if CHANNEL_POSTS_TOPIC_HISTORY_MAX <= 0:
+        _channel_recent_topics.clear()
+        return
+    while len(_channel_recent_topics) > CHANNEL_POSTS_TOPIC_HISTORY_MAX:
+        _channel_recent_topics.popleft()
+
+def _topic_recently_used(topic: str) -> bool:
+    if CHANNEL_POSTS_TOPIC_REPEAT_HOURS <= 0:
+        return False
+    norm = _normalize_topic_name(topic)
+    if not norm:
+        return False
+    cutoff = time.time() - CHANNEL_POSTS_TOPIC_REPEAT_HOURS * 3600
+    for item in reversed(_channel_recent_topics):
+        try:
+            ts = float(item.get("ts") or 0)
+        except Exception:
+            continue
+        if ts < cutoff:
+            break
+        if _normalize_topic_name(str(item.get("topic") or "")) == norm:
+            return True
+    return False
+
+def _remember_channel_topic(topic: str) -> None:
+    if not topic:
+        return
+    _channel_recent_topics.append({"topic": topic, "ts": time.time()})
+    _prune_topic_history()
+    _save_channel_topics_history()
+
 def _load_channel_actions() -> None:
     if not CHANNEL_POSTS_ACTIONS_FILE.exists():
         return
@@ -3704,12 +3775,23 @@ def _next_channel_topic() -> str:
     if not topics:
         return "status"
     global _channel_posts_index
-    idx = _channel_posts_index % len(topics)
-    _channel_posts_index += 1
+    start_idx = _channel_posts_index % len(topics)
+    chosen = None
+    for offset in range(len(topics)):
+        idx = (start_idx + offset) % len(topics)
+        candidate = topics[idx]
+        if not _topic_recently_used(candidate):
+            chosen = candidate
+            _channel_posts_index = start_idx + offset + 1
+            _save_channel_posts_state()
+            return chosen
+    chosen = topics[start_idx]
+    _channel_posts_index = start_idx + 1
     _save_channel_posts_state()
-    return topics[idx]
+    return chosen
 
 _load_channel_posts_state()
+_load_channel_topics_history()
 _load_channel_actions()
 
 def _channel_bot_line(lang: str) -> str:
@@ -3863,7 +3945,9 @@ def _channel_auto_mode(topic: str) -> str:
         return "quiet"
     if t.startswith(("якщо", "если", "if ")):
         return "scenario"
-    if t.startswith(("чому", "почему", "why", "що означає", "что значит", "what does", "як працює", "как работает", "how ",
+    if t.startswith(("чому", "почему", "why", "міф", "миф", "myth")):
+        return "myth"
+    if t.startswith(("що означає", "что значит", "what does", "як працює", "как работает", "how ",
                      "що відбувається", "что происходит", "what happens", "чим цей канал", "чем этот канал", "для кого",
                      "who this", "what we check", "що ми перевіряємо", "что мы проверяем", "чому ми", "почему мы",
                      "система активна", "system active")):
@@ -3919,6 +4003,28 @@ def _channel_explain_prompt(title: str, lang: str) -> str:
         "• 5–7 short bullet points in simple words\n"
         "Each point must be a concrete practical action.\n"
         "No technical details, no dates, no news.\n"
+        f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
+    )
+
+def _channel_myth_prompt(title: str, lang: str) -> str:
+    cta = CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"])
+    if lang == "uk":
+        return (
+            "Напиши пост «розвінчання міфу» як інструкцію.\n"
+            f"Заголовок: {title}\n"
+            "Формат:\n"
+            "ЗАГОЛОВОК\n"
+            "• 5–7 коротких пунктів\n"
+            "Кожен пункт = практична дія, яка знімає міф.\n"
+            f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
+        )
+    return (
+        "Write a myth-busting post as instructions.\n"
+        f"Title: {title}\n"
+        "Format:\n"
+        "TITLE\n"
+        "• 5–7 short points\n"
+        "Each point is a practical action that removes the myth.\n"
         f"{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
 
@@ -3999,6 +4105,99 @@ def _channel_action_has_keywords(action: str, keywords: List[str]) -> bool:
         return False
     a = action.lower()
     return any(k in a for k in keywords if k)
+
+def _channel_required_action_templates(lang: str) -> Dict[str, List[str]]:
+    if lang == "uk":
+        return {
+            "power": [
+                "Увімкни енергозбереження",
+                "Заряди телефон і павербанк",
+                "Перевір заряд телефону",
+            ],
+            "offline_contacts": [
+                "Збережи контакти офлайн",
+                "Запиши важливі номери на папері",
+            ],
+            "short_message": [
+                "Підготуй одне коротке повідомлення",
+                "Надішли одне коротке повідомлення",
+            ],
+            "backup_plan": [
+                "Домовся про резервний спосіб звʼязку",
+                "Узгодь час короткої перевірки",
+                "Признач точку зустрічі",
+            ],
+        }
+    return {
+        "power": [
+            "Enable power saving",
+            "Charge your phone and power bank",
+            "Check your phone battery",
+        ],
+        "offline_contacts": [
+            "Save contacts offline",
+            "Write key numbers on paper",
+        ],
+        "short_message": [
+            "Prepare one short message",
+            "Send one short message",
+        ],
+        "backup_plan": [
+            "Agree on a backup way to connect",
+            "Set a short check-in time",
+            "Set a meeting point",
+        ],
+    }
+
+def _channel_generic_action_templates(lang: str) -> List[str]:
+    if lang == "uk":
+        return [
+            "Вимкни Wi-Fi і Bluetooth",
+            "Увімкни енергозбереження",
+            "Збережи контакти офлайн",
+            "Підготуй одне коротке повідомлення",
+            "Домовся про резервний спосіб звʼязку",
+            "Перевір заряд телефону",
+            "Обмеж фонові оновлення",
+        ]
+    return [
+        "Disable Wi-Fi and Bluetooth",
+        "Enable power saving",
+        "Save contacts offline",
+        "Prepare one short message",
+        "Agree on a backup way to connect",
+        "Check your phone battery",
+        "Limit background updates",
+    ]
+
+def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
+    hints = _channel_topic_extra_hints(topic, lang)
+    if not hints:
+        return []
+    mapping_uk = {
+        "підготуй павербанк і кабель": "Підготуй павербанк і кабель",
+        "повідом маршрут близьким": "Повідом маршрут близьким",
+        "запиши контакти для дітей": "Запиши контакти для дітей",
+        "очисти памʼять і вимкни фонові оновлення": "Очисти памʼять і вимкни фонові оновлення",
+        "підключи павербанк або знайди заряд": "Підключи павербанк або знайди заряд",
+        "надсилай дуже короткі повідомлення": "Надсилай дуже короткі повідомлення",
+        "узгодь графік коротких перевірок": "Узгодь графік коротких перевірок",
+        "признач координатора звʼязку": "Признач координатора звʼязку",
+        "попроси допомогу однією фразою": "Попроси допомогу однією фразою",
+    }
+    mapping_en = {
+        "prepare a power bank and cable": "Prepare a power bank and cable",
+        "share your route with close ones": "Share your route with close ones",
+        "write key contacts for kids": "Write key contacts for kids",
+        "clear storage and disable background updates": "Clear storage and disable background updates",
+        "use a power bank or find charging": "Use a power bank or find charging",
+        "send very short messages": "Send very short messages",
+        "set a short check-in schedule": "Set a short check-in schedule",
+        "assign one coordinator": "Assign one coordinator",
+        "ask for help in one sentence": "Ask for help in one sentence",
+    }
+    mapping = mapping_uk if lang == "uk" else mapping_en
+    return [mapping.get(h, h) for h in hints]
 
 def _channel_required_groups(topic: str) -> List[str]:
     return ["power", "offline_contacts", "short_message", "backup_plan"]
@@ -4084,12 +4283,9 @@ def _remember_channel_actions(actions: List[str]) -> None:
             _channel_recent_actions.popleft()
     _save_channel_actions()
 
-def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
-    if not text:
+def _channel_validate_actions(actions: List[str], topic: str, lang: str) -> bool:
+    if not actions:
         return False
-    if _channel_is_low_value(text):
-        return False
-    actions = _extract_action_lines(text)
     if not (5 <= len(actions) <= 7):
         return False
     if not _channel_actions_cover_required(actions, topic, lang):
@@ -4108,6 +4304,105 @@ def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
     if _channel_action_overlap_count(list(seen)) > CHANNEL_POSTS_ACTION_REPEAT_MAX:
         return False
     return True
+
+def _pick_action(actions: List[str], used: Set[str], recent: Set[str]) -> Optional[str]:
+    for act in actions:
+        norm = _normalize_action_line(act)
+        if not norm or norm in used or norm in recent:
+            continue
+        words = _action_word_count(act)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            continue
+        return act
+    return None
+
+def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> List[str]:
+    cleaned: List[str] = []
+    seen: Set[str] = set()
+    recent = set(_channel_recent_actions)
+    for action in source_actions:
+        action = (action or "").strip()
+        if not action or _channel_is_low_value(action):
+            continue
+        words = _action_word_count(action)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            continue
+        norm = _normalize_action_line(action)
+        if not norm or norm in seen:
+            continue
+        if norm in recent:
+            continue
+        cleaned.append(action)
+        seen.add(norm)
+
+    templates = _channel_required_action_templates(lang)
+    keywords = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    for group in _channel_required_groups(topic):
+        keys = keywords.get(group, [])
+        if keys and any(_channel_action_has_keywords(a, keys) for a in cleaned):
+            continue
+        pick = _pick_action(templates.get(group, []), seen, recent)
+        if pick:
+            cleaned.append(pick)
+            seen.add(_normalize_action_line(pick))
+
+    for extra in _channel_topic_extra_action_templates(topic, lang):
+        if len(cleaned) >= 7:
+            break
+        norm = _normalize_action_line(extra)
+        if not norm or norm in seen or norm in recent:
+            continue
+        cleaned.append(extra)
+        seen.add(norm)
+
+    if len(cleaned) < 5:
+        for filler in _channel_generic_action_templates(lang):
+            if len(cleaned) >= 5:
+                break
+            norm = _normalize_action_line(filler)
+            if not norm or norm in seen or norm in recent:
+                continue
+            cleaned.append(filler)
+            seen.add(norm)
+
+    if len(cleaned) > 7:
+        required_groups = _channel_required_groups(topic)
+        prioritized: List[str] = []
+        remaining = list(cleaned)
+        for group in required_groups:
+            keys = keywords.get(group, [])
+            for action in remaining:
+                if keys and _channel_action_has_keywords(action, keys):
+                    prioritized.append(action)
+                    remaining.remove(action)
+                    break
+        for action in remaining:
+            if len(prioritized) >= 7:
+                break
+            prioritized.append(action)
+        cleaned = prioritized[:7]
+
+    return cleaned
+
+def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> str:
+    title = (topic or "").strip()
+    if not title:
+        title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
+    lines = [title, ""]
+    for idx, action in enumerate(actions, 1):
+        lines.append(f"{idx}) {action}")
+    lines.append("")
+    lines.append(CHANNEL_CTA_TEXT.get(lang, CHANNEL_CTA_TEXT["uk"]))
+    t = _topic_lower(topic)
+    if _normalize_channel_topic(topic) == "pinned" or any(k in t for k in ("вхідна", "вход", "закреп", "entry point", "pinned")):
+        lines.append(_channel_bot_line(lang))
+    return "\n".join(lines).strip()
+
+def _channel_validate_ai_post(text: str, topic: str, lang: str) -> bool:
+    if not text or _channel_is_low_value(text):
+        return False
+    actions = _extract_action_lines(text)
+    return _channel_validate_actions(actions, topic, lang)
 
 def _channel_titled_post(title: str, lines: List[str], cta: Optional[str] = None) -> str:
     parts = [title, ""]
@@ -4221,6 +4516,8 @@ def _channel_topic_prompt(topic: str, lang: str) -> str:
     mode = _channel_auto_mode(theme)
     if mode == "scenario":
         return _channel_scenario_prompt(theme, lang)
+    if mode == "myth":
+        return _channel_myth_prompt(theme, lang)
     if mode == "forward":
         return _channel_forward_prompt(theme, lang)
     if mode == "quiet":
@@ -4383,7 +4680,8 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
                 "3) Перевір разом заряд телефону\n"
                 "4) Домовся про один спосіб звʼязку\n"
                 "5) Збережи контакти офлайн\n"
-                f"6) Узгодь час для короткої перевірки\n\n{cta}"
+                "6) Підготуй одне коротке повідомлення\n"
+                f"7) Узгодь час для короткої перевірки\n\n{cta}"
             )
         return (
             "Forward to close ones\n\n"
@@ -4392,7 +4690,8 @@ def _channel_post_fallback(topic: str, lang: str) -> str:
             "3) Check their phone battery together\n"
             "4) Agree on one way to connect\n"
             "5) Save contacts offline\n"
-            f"6) Set a time for a short check-in\n\n{cta}"
+            "6) Prepare one short message\n"
+            f"7) Set a time for a short check-in\n\n{cta}"
         )
     if key == "quiet":
         if lang == "uk":
@@ -4562,11 +4861,15 @@ async def _build_channel_post(topic: str, lang: str) -> str:
         logger.info("Channel post AI unavailable: %s", _ai_status_reason())
     if text:
         text = text.strip()
-        if not _channel_validate_ai_post(text, topic, lang):
-            logger.info("Channel post AI rejected; fallback used: topic=%s", topic)
-            return _channel_post_fallback(topic, lang)
-        return text
-    return _channel_post_fallback(topic, lang)
+        actions = _channel_fill_actions(_extract_action_lines(text), topic, lang)
+        if _channel_validate_actions(actions, topic, lang):
+            return _channel_format_actions_post(topic, actions, lang)
+        logger.info("Channel post AI rejected; fallback used: topic=%s", topic)
+    fallback = _channel_post_fallback(topic, lang)
+    actions = _channel_fill_actions(_extract_action_lines(fallback), topic, lang)
+    if _channel_validate_actions(actions, topic, lang):
+        return _channel_format_actions_post(topic, actions, lang)
+    return fallback
 
 async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, text: str, lang: str) -> bool:
     image_bytes = await _generate_channel_post_image(topic, text)
@@ -4580,6 +4883,7 @@ async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, tex
         logger.info("Channel post delivered with image: topic=%s lang=%s", topic, lang)
         actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
         _remember_channel_actions(actions)
+        _remember_channel_topic(topic)
         return True
     await context.bot.send_message(
         chat_id=NEWS_CHANNEL_ID,
@@ -4589,6 +4893,7 @@ async def _send_channel_post(context: ContextTypes.DEFAULT_TYPE, topic: str, tex
     logger.info("Channel post delivered: topic=%s lang=%s", topic, lang)
     actions = [_normalize_action_line(a) for a in _extract_action_lines(text) if a]
     _remember_channel_actions(actions)
+    _remember_channel_topic(topic)
     return False
 
 async def channel_posts_job(context: ContextTypes.DEFAULT_TYPE):
