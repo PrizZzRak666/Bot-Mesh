@@ -3836,9 +3836,9 @@ CHANNEL_ACTION_KEYWORDS = {
         "connections_off": ["wi-fi", "wifi", "bluetooth", "фонов", "оновлен", "підключенн"],
         "travel": ["дороз", "маршрут", "адрес", "локац", "поїзд"],
         "children": ["діт", "дитин"],
-        "power_outage": ["світл", "електр", "блекаут"],
+        "power_outage": ["світл", "електр", "блекаут", "ламп", "ліхтар", "свіч"],
         "old_phone": ["стар", "повільн", "памʼят", "пам'ят"],
-        "phone_dead": ["розряд", "кабель", "заряд", "павербанк"],
+        "phone_dead": ["розряд", "кабель", "заряд", "павербанк", "акум"],
         "unstable": ["нестаб", "перерив", "зника"],
         "long_outage": ["6 год", "6год", "доб", "доба", "сут"],
         "only_one": ["лише у одного", "одна людина", "один телефон", "координатор"],
@@ -3852,9 +3852,9 @@ CHANNEL_ACTION_KEYWORDS = {
         "connections_off": ["wifi", "wi-fi", "bluetooth", "background"],
         "travel": ["travel", "road", "route", "address", "location"],
         "children": ["child", "kids"],
-        "power_outage": ["power outage", "blackout", "electricity"],
+        "power_outage": ["power outage", "blackout", "electricity", "lamp", "flashlight", "candle"],
         "old_phone": ["old phone", "slow", "storage"],
-        "phone_dead": ["dead", "charger", "cable", "power bank"],
+        "phone_dead": ["dead", "charger", "cable", "power bank", "battery"],
         "unstable": ["unstable", "drops", "weak signal"],
         "long_outage": ["6 hours", "24 hours", "one day", "a day"],
         "only_one": ["only one", "one person", "coordinator"],
@@ -4080,9 +4080,10 @@ def _channel_ai_instructions(lang: str) -> str:
         "4) No news, no analysis, no dates.\n"
         "5) Keep it short, calm, factual.\n"
         "6) Use simple words. Do not mention AI.\n"
-        "7) Every line must be a concrete, practical action or clear conclusion. No vague phrases.\n"
+        "7) Every line must be a concrete, practical action or a short lifehack tip. No vague phrases.\n"
         "8) Avoid repeats and filler like 'follow instructions' or 'stay calm'.\n"
-        f"9) Each action line should be {CHANNEL_POSTS_ACTION_MIN_WORDS}-{CHANNEL_POSTS_ACTION_MAX_WORDS} words.\n"
+        "9) If relevant, include 1-2 lifehacks (charging without grid, long-lasting light) but avoid impossible claims.\n"
+        f"10) Each action line should be {CHANNEL_POSTS_ACTION_MIN_WORDS}-{CHANNEL_POSTS_ACTION_MAX_WORDS} words.\n"
         f"Language: {language}.\n"
     )
 
@@ -4184,8 +4185,9 @@ def _channel_checklist_prompt(title_uk: str, title_en: str, lang: str) -> str:
             "ЗАГОЛОВОК\n\n"
             "1) ...\n"
             "2) ...\n"
-            "... (5–7 коротких ПРАКТИЧНИХ пунктів)\n"
+            "... (5–7 коротких лайфхаків/дій)\n"
             "Кожен пункт = конкретна дія, починається з дієслова.\n"
+            "Додай 1–2 короткі лайфхаки або важливі дані, якщо доречно.\n"
             "Без загальних фраз типу «слідкуй за інструкціями».\n"
             f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
         )
@@ -4196,8 +4198,9 @@ def _channel_checklist_prompt(title_uk: str, title_en: str, lang: str) -> str:
         "TITLE\n\n"
         "1) ...\n"
         "2) ...\n"
-        "... (5–7 PRACTICAL points)\n"
+        "... (5–7 lifehacks/actions)\n"
         "Each point must be a concrete action starting with a verb.\n"
+        "Add 1–2 short lifehacks or key tips if relevant.\n"
         "Avoid vague lines like 'follow instructions'.\n"
         f"\n{cta}\n\n{_channel_prompt_requirements(title, lang)}"
     )
@@ -4383,6 +4386,8 @@ def _channel_required_action_templates(lang: str) -> Dict[str, List[str]]:
                 "Увімкни енергозбереження",
                 "Заряди телефон і павербанк",
                 "Перевір заряд телефону",
+                "Заряджай телефон від авто",
+                "Заряджай від ноутбука через USB",
             ],
             "offline_contacts": [
                 "Збережи контакти офлайн",
@@ -4403,6 +4408,8 @@ def _channel_required_action_templates(lang: str) -> Dict[str, List[str]]:
             "Enable power saving",
             "Charge your phone and power bank",
             "Check your phone battery",
+            "Charge your phone from a car",
+            "Charge via a laptop USB port",
         ],
         "offline_contacts": [
             "Save contacts offline",
@@ -4429,6 +4436,8 @@ def _channel_generic_action_templates(lang: str) -> List[str]:
             "Домовся про резервний спосіб звʼязку",
             "Перевір заряд телефону",
             "Обмеж фонові оновлення",
+            "Підготуй ліхтарик на батарейках",
+            "Використай LED-лампу замість екрана",
         ]
     return [
         "Disable Wi-Fi and Bluetooth",
@@ -4438,6 +4447,31 @@ def _channel_generic_action_templates(lang: str) -> List[str]:
         "Agree on a backup way to connect",
         "Check your phone battery",
         "Limit background updates",
+        "Keep a battery flashlight ready",
+        "Use an LED lamp instead of the screen",
+    ]
+
+def _channel_lifehack_templates(lang: str) -> List[str]:
+    if lang == "uk":
+        return [
+            "Зменш яскравість екрана",
+            "Увімкни режим польоту без мережі",
+            "Тримай запасний кабель у сумці",
+            "Заряджай телефон від авто",
+            "Заряджай від ноутбука через USB",
+            "Перемкни мережу на 2G/3G",
+            "Вимкни геолокацію",
+            "Постав нічний режим екрана",
+        ]
+    return [
+        "Lower screen brightness",
+        "Use airplane mode without signal",
+        "Keep a spare cable in your bag",
+        "Charge your phone from a car",
+        "Charge via a laptop USB port",
+        "Switch to 2G/3G network",
+        "Turn off location services",
+        "Use night mode on the screen",
     ]
 
 def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
@@ -4458,6 +4492,22 @@ def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
         if picked:
             actions.append(picked)
             used.add(_normalize_action_line(picked))
+
+    lifehacks = _channel_lifehack_templates(lang)
+    random.shuffle(lifehacks)
+    lifehack_added = 0
+    for hack in lifehacks:
+        if lifehack_added >= 2 or len(actions) >= 7:
+            break
+        norm = _normalize_action_line(hack)
+        if not norm or norm in used or norm in recent:
+            continue
+        words = _action_word_count(hack)
+        if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            continue
+        actions.append(hack)
+        used.add(norm)
+        lifehack_added += 1
 
     extras = _channel_topic_extra_action_templates(topic, lang)
     random.shuffle(extras)
@@ -4518,6 +4568,10 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "узгодь графік коротких перевірок": "Узгодь графік коротких перевірок",
         "признач координатора звʼязку": "Признач координатора звʼязку",
         "попроси допомогу однією фразою": "Попроси допомогу однією фразою",
+        "заряджай телефон від авто": "Заряджай телефон від авто",
+        "заряджай від ноутбука через usb": "Заряджай від ноутбука через USB",
+        "підготуй ліхтарик на батарейках": "Підготуй ліхтарик на батарейках",
+        "використай led-лампу замість екрана": "Використай LED-лампу замість екрана",
     }
     mapping_en = {
         "prepare a power bank and cable": "Prepare a power bank and cable",
@@ -4529,6 +4583,10 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
         "set a short check-in schedule": "Set a short check-in schedule",
         "assign one coordinator": "Assign one coordinator",
         "ask for help in one sentence": "Ask for help in one sentence",
+        "charge your phone from a car": "Charge your phone from a car",
+        "charge via a laptop usb port": "Charge via a laptop USB port",
+        "keep a battery flashlight ready": "Keep a battery flashlight ready",
+        "use an led lamp instead of the screen": "Use an LED lamp instead of the screen",
     }
     mapping = mapping_uk if lang == "uk" else mapping_en
     return [mapping.get(h, h) for h in hints]
@@ -4546,6 +4604,8 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
     if any(k in t for k in kw.get("power_outage", [])):
         hints.append("підготуй павербанк і кабель" if lang == "uk" else "prepare a power bank and cable")
+        hints.append("підготуй ліхтарик на батарейках" if lang == "uk" else "keep a battery flashlight ready")
+        hints.append("використай led-лампу замість екрана" if lang == "uk" else "use an led lamp instead of the screen")
     if any(k in t for k in kw.get("travel", [])):
         hints.append("повідом маршрут близьким" if lang == "uk" else "share your route with close ones")
     if any(k in t for k in kw.get("children", [])):
@@ -4554,6 +4614,8 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
         hints.append("очисти памʼять і вимкни фонові оновлення" if lang == "uk" else "clear storage and disable background updates")
     if any(k in t for k in kw.get("phone_dead", [])):
         hints.append("підключи павербанк або знайди заряд" if lang == "uk" else "use a power bank or find charging")
+        hints.append("заряджай телефон від авто" if lang == "uk" else "charge your phone from a car")
+        hints.append("заряджай від ноутбука через usb" if lang == "uk" else "charge via a laptop usb port")
     if any(k in t for k in kw.get("unstable", [])):
         hints.append("надсилай дуже короткі повідомлення" if lang == "uk" else "send very short messages")
     if any(k in t for k in kw.get("long_outage", [])):
@@ -4591,13 +4653,17 @@ def _channel_prompt_requirements(topic: str, lang: str) -> str:
     return "\n".join(lines)
 
 def _channel_actions_cover_required(actions: List[str], topic: str, lang: str) -> bool:
+    return not _channel_missing_required_groups(actions, topic, lang)
+
+def _channel_missing_required_groups(actions: List[str], topic: str, lang: str) -> List[str]:
     groups = _channel_required_groups(topic)
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    missing: List[str] = []
     for group in groups:
         keywords = kw.get(group, [])
         if keywords and not any(_channel_action_has_keywords(action, keywords) for action in actions):
-            return False
-    return True
+            missing.append(group)
+    return missing
 
 def _channel_action_overlap_count(actions: List[str]) -> int:
     if not actions:
@@ -4619,23 +4685,64 @@ def _remember_channel_actions(actions: List[str]) -> None:
 
 def _channel_validate_actions(actions: List[str], topic: str, lang: str) -> bool:
     if not actions:
+        logger.debug("Channel post validation failed: no actions topic=%s lang=%s", topic, lang)
         return False
     if not (5 <= len(actions) <= 7):
+        logger.debug(
+            "Channel post validation failed: bad action count=%s topic=%s lang=%s",
+            len(actions),
+            topic,
+            lang,
+        )
         return False
-    if not _channel_actions_cover_required(actions, topic, lang):
+    missing = _channel_missing_required_groups(actions, topic, lang)
+    if missing:
+        logger.debug(
+            "Channel post validation failed: missing required groups=%s topic=%s lang=%s",
+            ",".join(missing),
+            topic,
+            lang,
+        )
         return False
     seen: Set[str] = set()
     for action in actions:
         if _channel_is_low_value(action):
+            logger.debug(
+                "Channel post validation failed: low value action=%s topic=%s lang=%s",
+                clip(action, 80),
+                topic,
+                lang,
+            )
             return False
         words = _action_word_count(action)
         if words < CHANNEL_POSTS_ACTION_MIN_WORDS or words > CHANNEL_POSTS_ACTION_MAX_WORDS:
+            logger.debug(
+                "Channel post validation failed: action word count=%s action=%s topic=%s lang=%s",
+                words,
+                clip(action, 80),
+                topic,
+                lang,
+            )
             return False
         norm = _normalize_action_line(action)
         if not norm or norm in seen:
+            logger.debug(
+                "Channel post validation failed: duplicate or empty action=%s topic=%s lang=%s",
+                clip(action, 80),
+                topic,
+                lang,
+            )
             return False
         seen.add(norm)
-    if _channel_action_overlap_count(list(seen)) > CHANNEL_POSTS_ACTION_REPEAT_MAX:
+    overlap_count = _channel_action_overlap_count(list(seen))
+    if overlap_count > CHANNEL_POSTS_ACTION_REPEAT_MAX:
+        logger.debug(
+            "Channel post validation failed: repeated actions overlap=%s max=%s topic=%s lang=%s",
+            overlap_count,
+            CHANNEL_POSTS_ACTION_REPEAT_MAX,
+            topic,
+            lang,
+        )
         return False
     return True
 
@@ -4722,7 +4829,8 @@ def _channel_format_actions_post(topic: str, actions: List[str], lang: str) -> s
     title = (topic or "").strip()
     if not title:
         title = "Коротка інструкція" if lang == "uk" else "Quick checklist"
-    lines = [title, ""]
+    hint = "Лайфхаки та важливі деталі:" if lang == "uk" else "Lifehacks and key tips:"
+    lines = [title, "", hint]
     for idx, action in enumerate(actions, 1):
         lines.append(f"{idx}) {action}")
     lines.append("")
@@ -5651,6 +5759,116 @@ async def channel_post_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYP
             update.effective_chat.id,
             update.message.reply_text,
             t(uid, "❌ Помилка під час відправки.", "❌ Failed to send post."),
+            reply_markup=menu_only_kb(uid),
+        )
+
+async def meme_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⛔ Тільки адмін.", "⛔ Admin only."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not NEWS_CHANNEL_ID:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "NEWS_CHANNEL_ID не задан.", "NEWS_CHANNEL_ID is not set."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not MEME_POSTS_ENABLED:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⚠️ MEME_POSTS_ENABLED вимкнено.", "⚠️ MEME_POSTS_ENABLED is off."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not RSS_FEEDS:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⚠️ RSS_FEEDS порожній.", "⚠️ RSS_FEEDS is empty."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    if not ai_enabled():
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "⚠️ AI недоступний.", "⚠️ AI is unavailable."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+    reason = _meme_image_skip_reason()
+    if reason:
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, f"⚠️ Картинки вимкнені: {reason}.", f"⚠️ Images are disabled: {reason}."),
+            reply_markup=menu_only_kb(uid),
+        )
+        return
+
+    await send_with_cleanup(
+        context.bot,
+        update.effective_chat.id,
+        update.message.reply_text,
+        t(uid, "⏳ Генерую мем...", "⏳ Generating meme..."),
+    )
+    try:
+        items = await _collect_summary_items()
+        if not items:
+            await send_with_cleanup(
+                context.bot,
+                update.effective_chat.id,
+                update.message.reply_text,
+                t(uid, "ℹ️ Немає новин для мема.", "ℹ️ No news for a meme."),
+                reply_markup=menu_only_kb(uid),
+            )
+            return
+        image_bytes = await _generate_meme_image(items)
+        if not image_bytes:
+            reason = _meme_image_skip_reason()
+            msg = t(uid, "❌ Мем не згенеровано.", "❌ Meme was not generated.")
+            if reason:
+                msg = t(uid, f"⚠️ Картинки вимкнені: {reason}.", f"⚠️ Images are disabled: {reason}.")
+            await send_with_cleanup(
+                context.bot,
+                update.effective_chat.id,
+                update.message.reply_text,
+                msg,
+                reply_markup=menu_only_kb(uid),
+            )
+            return
+        await context.bot.send_photo(
+            chat_id=NEWS_CHANNEL_ID,
+            photo=InputFile(io.BytesIO(image_bytes), filename="meme.png"),
+        )
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "✅ Мем відправлено в канал.", "✅ Meme sent to channel."),
+            reply_markup=menu_only_kb(uid),
+        )
+    except Exception:
+        logger.exception("Manual meme run failed")
+        await send_with_cleanup(
+            context.bot,
+            update.effective_chat.id,
+            update.message.reply_text,
+            t(uid, "❌ Помилка під час відправки.", "❌ Failed to send meme."),
             reply_markup=menu_only_kb(uid),
         )
 
@@ -6818,6 +7036,7 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("summary_now", summary_now_cmd))
     app.add_handler(CommandHandler("channel_post_now", channel_post_now_cmd))
+    app.add_handler(CommandHandler("meme_now", meme_now_cmd))
     app.add_handler(CommandHandler("news_stats", news_stats_cmd))
     app.add_handler(CommandHandler("news_keywords_suggest", news_keywords_suggest_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
