@@ -2571,12 +2571,34 @@ def _parse_style_pool(value: str, fallback: List[str]) -> List[str]:
             return items
     return [i for i in fallback if i in IMAGE_STYLE_PRESETS]
 
-def _style_pool_for(kind: str) -> List[str]:
+def _channel_image_style_pool(topic: str) -> List[str]:
+    base_pool = _parse_style_pool(CHANNEL_POSTS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+    if not base_pool:
+        base_pool = list(IMAGE_STYLE_PRESETS.keys())
+    t = _topic_lower(topic)
+    if "лайфхак" in t or "lifehack" in t:
+        prefer = ["poster-pop", "flat-vector", "grainy-duotone"]
+    elif t.startswith(("якщо", "если", "if ")):
+        prefer = ["isometric", "flat-vector", "monoline"]
+    elif t.startswith(("чому", "почему", "why", "міф", "myth", "факт", "fact")):
+        prefer = ["editorial-ink", "paper-cut", "monoline"]
+    elif "офлайн" in t or "offline" in t:
+        prefer = ["paper-cut", "soft-gradient", "grainy-duotone"]
+    elif "координац" in t or "coordination" in t:
+        prefer = ["monoline", "soft-gradient", "isometric"]
+    elif "підсумок тижня" in t or "weekly recap" in t:
+        prefer = ["cinematic-glow", "editorial-ink", "paper-cut"]
+    else:
+        prefer = ["flat-vector", "soft-gradient", "paper-cut"]
+    filtered = [p for p in base_pool if p in prefer]
+    return filtered if filtered else base_pool
+
+def _style_pool_for(kind: str, topic: Optional[str] = None) -> List[str]:
     if kind == "summary":
         base_pool = _parse_style_pool(NEWS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
         return _parse_style_pool(NEWS_SUMMARY_IMAGE_STYLES, base_pool)
     if kind == "channel":
-        return _parse_style_pool(CHANNEL_POSTS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
+        return _channel_image_style_pool(topic or "")
     if kind == "meme":
         return _parse_style_pool(MEME_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
     return _parse_style_pool(NEWS_IMAGE_STYLES, list(IMAGE_STYLE_PRESETS.keys()))
@@ -2592,10 +2614,10 @@ def _pick_style(pool: List[str], last: str) -> str:
         choices = pool
     return random.choice(choices) if choices else pool[0]
 
-def _image_style_line(kind: str) -> str:
+def _image_style_line(kind: str, topic: Optional[str] = None) -> str:
     global _last_news_image_style, _last_summary_image_style, _last_channel_image_style
     global _last_meme_image_style
-    pool = _style_pool_for(kind)
+    pool = _style_pool_for(kind, topic=topic)
     if not pool:
         return ""
     if kind == "summary":
@@ -3945,9 +3967,9 @@ CHANNEL_ACTION_KEYWORDS = {
         "only_one": ["лише у одного", "одна людина", "один телефон", "координатор"],
         "not_tech": ["не розбира", "не в темі"],
         "docs": ["документ", "паспорт", "копі", "довідк"],
-        "water": ["вода", "їжа", "продукт", "запас"],
+        "water": ["вода", "вод", "їжа", "їж", "продукт", "запас"],
         "heat": ["тепл", "гріти", "ковдр", "свіч", "обігр"],
-        "maps": ["карта", "маршрут", "навігац", "offline map", "офлайн-карт"],
+        "maps": ["карта", "карт", "маршрут", "навігац", "offline map", "офлайн-карт"],
         "cash": ["готів", "гроші", "картк", "гривн"],
     },
     "en": {
@@ -3986,6 +4008,31 @@ CHANNEL_REQUIRED_ACTION_HINTS = {
         "one short message to close ones",
         "backup way to connect or meeting plan",
     ],
+}
+
+CHANNEL_REQUIRED_ACTION_HINTS_BY_GROUP = {
+    "uk": {
+        "power": "заряд/енергозбереження",
+        "offline_contacts": "офлайн-контакти",
+        "short_message": "коротке повідомлення близьким",
+        "backup_plan": "резервний спосіб звʼязку або план",
+        "docs": "копії документів",
+        "water": "запас води/їжі",
+        "heat": "тепло/ковдри",
+        "maps": "офлайн-карти/адреси",
+        "cash": "готівка",
+    },
+    "en": {
+        "power": "battery/power saving",
+        "offline_contacts": "offline contacts",
+        "short_message": "one short message to close ones",
+        "backup_plan": "backup way to connect or meeting plan",
+        "docs": "document copies",
+        "water": "water/food supply",
+        "heat": "warmth/blankets",
+        "maps": "offline maps/addresses",
+        "cash": "cash on hand",
+    },
 }
 
 CHANNEL_POSTS_STATE_FILE = _resolve_path(env("CHANNEL_POSTS_STATE_FILE", "data/channel_posts_state.json"))
@@ -4312,7 +4359,7 @@ def _channel_post_image_prompt(topic: str, text: str) -> str:
         "communication readiness. Use a calm, clear visual style. No text overlays, no logos, no "
         "technical diagrams, no maps, no violence."
     )
-    style_line = _image_style_line("channel")
+    style_line = _image_style_line("channel", topic=topic)
     if style_line:
         base = base + " " + style_line
     return f"{base}\n\nTOPIC: {topic}\nPOST: {summary}"
@@ -4596,6 +4643,26 @@ def _channel_required_action_templates(lang: str) -> Dict[str, List[str]]:
                 "Узгодь час короткої перевірки",
                 "Признач точку зустрічі",
             ],
+            "docs": [
+                "Збережи копії документів офлайн",
+                "Зроби фото паспорта і збережи локально",
+            ],
+            "water": [
+                "Зроби запас води на 24 години",
+                "Підготуй мінімальний запас їжі й води",
+            ],
+            "heat": [
+                "Підготуй ковдру і теплий одяг",
+                "Тримай теплі шкарпетки під рукою",
+            ],
+            "maps": [
+                "Збережи офлайн-карти району",
+                "Запиши важливі адреси на папері",
+            ],
+            "cash": [
+                "Май трохи готівки під рукою",
+                "Збережи дрібні купюри окремо",
+            ],
         }
     return {
         "power": [
@@ -4617,6 +4684,26 @@ def _channel_required_action_templates(lang: str) -> Dict[str, List[str]]:
             "Agree on a backup way to connect",
             "Set a short check-in time",
             "Set a meeting point",
+        ],
+        "docs": [
+            "Save offline copies of documents",
+            "Keep a photo of your ID locally",
+        ],
+        "water": [
+            "Prepare water for 24 hours",
+            "Keep a minimal food supply",
+        ],
+        "heat": [
+            "Prepare blankets and warm clothes",
+            "Keep warm socks nearby",
+        ],
+        "maps": [
+            "Save offline maps of your area",
+            "Write key addresses on paper",
+        ],
+        "cash": [
+            "Keep a bit of cash",
+            "Separate small banknotes",
         ],
     }
 
@@ -4669,7 +4756,7 @@ def _channel_lifehack_templates(lang: str) -> List[str]:
     ]
 
 def _channel_fallback_actions(topic: str, lang: str) -> List[str]:
-    required_groups = _channel_required_groups(topic)
+    required_groups = _channel_required_groups(topic, lang)
     required_map = _channel_required_action_templates(lang)
     recent = set(_channel_recent_actions)
     used: Set[str] = set()
@@ -4795,12 +4882,46 @@ def _channel_topic_extra_action_templates(topic: str, lang: str) -> List[str]:
     mapping = mapping_uk if lang == "uk" else mapping_en
     return [mapping.get(h, h) for h in hints]
 
-def _channel_required_groups(topic: str) -> List[str]:
+def _channel_required_groups(topic: str, lang: str) -> List[str]:
+    t = _topic_lower(topic)
+    kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
+    special: List[str] = []
+    for key in ("docs", "water", "heat", "maps", "cash"):
+        if any(k in t for k in kw.get(key, [])):
+            special.append(key)
+    if any(k in t for k in kw.get("power", [])) or any(k in t for k in kw.get("phone_dead", [])):
+        special.append("power")
+    if any(k in t for k in kw.get("short_message", [])):
+        special.append("short_message")
+    if any(k in t for k in kw.get("offline_contacts", [])):
+        special.append("offline_contacts")
+    if any(k in t for k in kw.get("backup_plan", [])):
+        special.append("backup_plan")
+
+    deduped: List[str] = []
+    for g in special:
+        if g not in deduped:
+            deduped.append(g)
+
+    if deduped:
+        if "backup_plan" not in deduped:
+            deduped.append("backup_plan")
+        return deduped[:4]
+
     return ["power", "offline_contacts", "short_message", "backup_plan"]
 
-def _channel_required_action_hints(lang: str) -> str:
-    hints = CHANNEL_REQUIRED_ACTION_HINTS.get(lang, CHANNEL_REQUIRED_ACTION_HINTS["uk"])
-    return ", ".join(hints)
+def _channel_required_action_hints(topic: str, lang: str) -> str:
+    groups = _channel_required_groups(topic, lang)
+    hints_by_group = CHANNEL_REQUIRED_ACTION_HINTS_BY_GROUP.get(lang, CHANNEL_REQUIRED_ACTION_HINTS_BY_GROUP["uk"])
+    hints: List[str] = []
+    for group in groups:
+        hint = hints_by_group.get(group)
+        if hint:
+            hints.append(hint)
+    if hints:
+        return ", ".join(hints)
+    fallback = CHANNEL_REQUIRED_ACTION_HINTS.get(lang, CHANNEL_REQUIRED_ACTION_HINTS["uk"])
+    return ", ".join(fallback)
 
 def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
     t = _topic_lower(topic)
@@ -4842,7 +4963,7 @@ def _channel_topic_extra_hints(topic: str, lang: str) -> List[str]:
     return hints
 
 def _channel_prompt_requirements(topic: str, lang: str) -> str:
-    required = _channel_required_action_hints(lang)
+    required = _channel_required_action_hints(topic, lang)
     extra = _channel_topic_extra_hints(topic, lang)
     recent = "; ".join(list(_channel_recent_actions)[-6:])
     word_min = max(1, CHANNEL_POSTS_ACTION_MIN_WORDS)
@@ -4871,7 +4992,7 @@ def _channel_actions_cover_required(actions: List[str], topic: str, lang: str) -
     return not _channel_missing_required_groups(actions, topic, lang)
 
 def _channel_missing_required_groups(actions: List[str], topic: str, lang: str) -> List[str]:
-    groups = _channel_required_groups(topic)
+    groups = _channel_required_groups(topic, lang)
     kw = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
     missing: List[str] = []
     for group in groups:
@@ -4993,7 +5114,7 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
 
     templates = _channel_required_action_templates(lang)
     keywords = CHANNEL_ACTION_KEYWORDS.get(lang, CHANNEL_ACTION_KEYWORDS["uk"])
-    for group in _channel_required_groups(topic):
+    for group in _channel_required_groups(topic, lang):
         keys = keywords.get(group, [])
         if keys and any(_channel_action_has_keywords(a, keys) for a in cleaned):
             continue
@@ -5022,7 +5143,7 @@ def _channel_fill_actions(source_actions: List[str], topic: str, lang: str) -> L
             seen.add(norm)
 
     if len(cleaned) > 7:
-        required_groups = _channel_required_groups(topic)
+        required_groups = _channel_required_groups(topic, lang)
         prioritized: List[str] = []
         remaining = list(cleaned)
         for group in required_groups:
